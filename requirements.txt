@@ -1,0 +1,5 @@
+prompt_toolkit==3.0.53
+psycopg==3.3.4
+psycopg-binary==3.3.4
+pyserial==3.5
+wcwidth==0.8.2

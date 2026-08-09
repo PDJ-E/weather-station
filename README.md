@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  🚧 <strong>Active development — Device communication and early prototyping</strong>
+  🚧 <strong>Active development — DHT11 telemetry and PostgreSQL ingestion</strong>
 </p>
 
 ---
@@ -246,8 +246,11 @@ The project foundation is operational:
 - PostgreSQL has been installed.
 - The monorepo structure has been established.
 - The initial project documentation is being created.
+- Bidirectional UART communication between the Raspberry Pi 5 and a Raspberry Pi Pico 2 is working, including a command protocol (`PING`, `STATUS`, `START`, `STOP`, `SET_INTERVAL`, `READ_NOW`).
+- A DHT11 sensor node reports JSON telemetry over UART, which the Pi validates, queues, and persists into PostgreSQL without blocking the UART read loop.
+- A first derived metric (dew point, via the Magnus formula) is computed from stored raw readings by an independent process, establishing the raw/derived separation the storage model is built around.
 
-The next technical milestone is a bidirectional UART experiment between the Raspberry Pi 5 and a Raspberry Pi Pico 2. That experiment will establish the first real communication path and provide the foundation for the initial ATP message implementation.
+The next technical milestone is formalizing this ad hoc command/telemetry format into the first ATP message implementations, alongside hardening device reliability — reconnection handling, sensor fault reporting — before additional sensors are introduced.
 
 ---
 
@@ -259,7 +262,7 @@ Development is organized around a small number of major milestones:
 |---|---|---|
 | 1 | Development environment and repository foundation | Complete |
 | 2 | Pi-to-Pico communication and initial ATP messages | In progress |
-| 3 | Sensor acquisition and PostgreSQL ingestion | Planned |
+| 3 | Sensor acquisition and PostgreSQL ingestion | In progress |
 | 4 | RS-485 field bus and distributed device scheduling | Planned |
 | 5 | Backend API, dashboard, and operational monitoring | Planned |
 | 6 | Outdoor hardware, enclosures, and electrical protection | Planned |
@@ -295,6 +298,8 @@ Technical documentation will live under `docs/` rather than expanding the root R
 It will include the protocol specification, system architecture, database design, power distribution, wiring, device roles, hardware decisions, deployment procedures, recovery processes, and the complete roadmap.
 
 The README is intended to remain the entry point: it explains what the project is, why its architecture exists, what has already been built, and where to find deeper technical material.
+
+Notable changes across the project are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

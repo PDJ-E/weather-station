@@ -15,3 +15,17 @@ AVG (temperature_c) AS avg_temp,
 AVG (humidity_pct) AS avg_humidity
 FROM weather_measurement_raw
 WHERE node_id = 'pico-01-dht11';
+
+
+SELECT
+    r.received_at_utc,
+    r.sequence,
+    r.uptime_ms,
+    r.temperature_c,
+    r.humidity_pct,
+    r.sensor_status,
+    d.dew_point_c
+FROM weather_measurement_raw r
+LEFT JOIN weather_measurement_derived d ON d.raw_id = r.id
+WHERE r.node_id = 'pico-01-dht11'
+ORDER BY r.received_at_utc;

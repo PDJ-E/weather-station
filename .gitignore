@@ -72,3 +72,4 @@ htmlcov/
 
 *.gcode
 .vscode/settings.json
+*.csv

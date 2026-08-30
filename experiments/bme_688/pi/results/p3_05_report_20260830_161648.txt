@@ -1,0 +1,111 @@
+============================================================
+ P3-05 ENVIRONMENTAL VALIDATION REPORT
+============================================================
+
+RESULT: PASS WITH WARNINGS
+
+------------------------------------------------------------
+ TEST CONFIGURATION
+------------------------------------------------------------
+Start UTC             : 2026-08-30T20:16:48.149815+00:00
+End UTC               : 2026-08-30T20:31:48.149909+00:00
+Actual duration        : 900.0 s
+Requested duration     : 900 s
+Sampling period        : 5.0 s
+UART                   : /dev/ttyAMA0 @ 115200 8N1
+Unit ID                : 1
+Register Map           : 0x0101
+Previous run_enable    : False
+Configured Pico interval: 5 s
+
+------------------------------------------------------------
+ ACQUISITION / TRANSPORT
+------------------------------------------------------------
+Attempts               : 180
+Successful samples     : 180
+Failed samples         : 0
+Success rate           : 100.000 %
+Transport errors       : 0
+READ_NOW timeouts      : 0
+Counter errors         : 0
+Uptime errors          : 0
+Map errors             : 0
+Trigger latency mean   : 437.29 ms
+Trigger latency min    : 434.94 ms
+Trigger latency max    : 444.46 ms
+
+------------------------------------------------------------
+ DHT11 STATISTICS
+------------------------------------------------------------
+Temperature min        : 31.00 C
+Temperature mean       : 31.28 C
+Temperature max        : 32.00 C
+Temperature stdev      : 0.449 C
+Max temperature jump   : 1.00 C
+Humidity min           : 61.00 %
+Humidity mean          : 62.28 %
+Humidity max           : 63.00 %
+Humidity stdev         : 0.628 %
+Max humidity jump      : 1.00 pp
+
+------------------------------------------------------------
+ BME688 STATISTICS
+------------------------------------------------------------
+Temperature min        : 31.08 C
+Temperature mean       : 31.18 C
+Temperature max        : 31.31 C
+Temperature stdev      : 0.053 C
+Max temperature jump   : 0.05 C
+Humidity min           : 66.12 %
+Humidity mean          : 66.75 %
+Humidity max           : 70.04 %
+Humidity stdev         : 0.364 %
+Max humidity jump      : 2.87 pp
+Pressure min           : 1006.98 hPa
+Pressure mean          : 1007.13 hPa
+Pressure max           : 1007.31 hPa
+Pressure stdev         : 0.0576 hPa
+Max pressure jump      : 0.180 hPa
+Gas resistance min     : 5684 ohm
+Gas resistance mean    : 43347.5 ohm
+Gas resistance max     : 191509 ohm
+Gas resistance stdev   : 18700.6 ohm
+Max gas step ratio     : 33.693x
+Gas valid samples      : 180/180 (100.00 %)
+Heater stable samples  : 179/180 (99.44 %)
+
+------------------------------------------------------------
+ DHT11 vs BME688
+------------------------------------------------------------
+Temperature difference defined as:
+    DHT11 - BME688
+Temperature bias       : 0.099 C
+Temperature MAE        : 0.330 C
+Temperature max abs diff: 0.870 C
+
+Humidity difference defined as:
+    DHT11 - BME688
+Humidity bias          : -4.464 pp
+Humidity MAE           : 4.464 pp
+Humidity max abs diff  : 7.040 pp
+
+------------------------------------------------------------
+ WARNING SUMMARY
+------------------------------------------------------------
+GAS_LARGE_CHANGE              : 1
+HEATER_NOT_STABLE             : 1
+
+------------------------------------------------------------
+ HARD FAILURE REASONS
+------------------------------------------------------------
+None.
+
+------------------------------------------------------------
+ ARTIFACTS
+------------------------------------------------------------
+CSV                   : /home/pedro/Projects/weather-station/experiments/bme_688/pi/results/p3_05_samples_20260830_161648.csv
+Report                : /home/pedro/Projects/weather-station/experiments/bme_688/pi/results/p3_05_report_20260830_161648.txt
+
+============================================================
+ FINAL RESULT: PASS WITH WARNINGS
+============================================================

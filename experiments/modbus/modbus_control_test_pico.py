@@ -36,8 +36,10 @@ import dht  # type: ignore
 import time
 
 from umodbus.serial import ModbusRTU  # type: ignore
-
-from pico_modbus_patch import apply_umodbus_p2_patch # type: ignore
+from pico_modbus_patch import ( # type: ignore
+    apply_umodbus_p2_patch,
+    apply_sample_interval_validation_patch,
+)
 
 
 # ================================================================
@@ -192,7 +194,7 @@ server = ModbusRTU(
 
 
 apply_umodbus_p2_patch(server)
-
+apply_sample_interval_validation_patch(server)
 
 # ================================================================
 # Helpers para callbacks

@@ -144,3 +144,89 @@ def apply_umodbus_p2_patch(server):
     # -------------------------------------------------------------
 
     interface._uart_read_frame = patched_uart_read_frame
+
+# Second patch: validate sample_interval_s before sending response.
+
+def apply_sample_interval_validation_patch(
+    server,
+    register_address=101,
+    minimum=2,
+    maximum=3600,
+):
+    """
+    Weather Station P2 compatibility patch.
+
+    micropython-modbus 2.3.7 realiza FC06 así:
+
+        set_hreg()
+        send_response()
+        on_set_cb()
+
+    Eso impide que on_set_cb rechace un valor antes
+    de que el servidor responda.
+
+    El Register Map v1 de Weather Station exige:
+
+        Holding 101 sample_interval_s
+        valid: 2..3600
+        invalid: Modbus Exception 03
+
+    Este patch intercepta únicamente FC06/HREG 101
+    ANTES del handler original.
+
+    El resto de operaciones siguen usando el código
+    original de micropython-modbus.
+    """
+
+    from umodbus import const as Const # type: ignore
+
+    original_write_access = (
+        server._process_write_access
+    )
+
+    def patched_write_access(
+        request,
+        reg_type,
+    ):
+        is_target = (
+            reg_type == "HREGS"
+            and request.function
+            == Const.WRITE_SINGLE_REGISTER
+            and request.register_addr
+            == register_address
+        )
+
+        if is_target:
+
+            if (
+                request.data is None
+                or len(request.data) != 2
+            ):
+                request.send_exception(
+                    Const.ILLEGAL_DATA_VALUE
+                )
+                return
+
+            value = (
+                (request.data[0] << 8)
+                | request.data[1]
+            )
+
+            if not (
+                minimum
+                <= value
+                <= maximum
+            ):
+                request.send_exception(
+                    Const.ILLEGAL_DATA_VALUE
+                )
+                return
+
+        return original_write_access(
+            request=request,
+            reg_type=reg_type,
+        )
+
+    server._process_write_access = (
+        patched_write_access
+    )

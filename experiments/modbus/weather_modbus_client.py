@@ -766,3 +766,50 @@ class WeatherStationModbusClient:
                 address
             )
         )
+    def diagnostic_write_holding(
+        self,
+        address,
+        value,
+    ):
+        """
+        Escritura FC06 sin validación de negocio
+        del cliente.
+
+        Solo integration testing.
+
+        Permite comprobar las validaciones
+        implementadas por el servidor.
+        """
+
+        self._write_holding_register(
+            address,
+            value,
+        )
+
+    def diagnostic_read_input(
+        self,
+        address,
+        count=1,
+    ):
+        """
+        Lectura FC04 arbitraria.
+
+        Solo integration testing.
+        """
+
+        result = self._execute(
+            lambda: (
+                self._client
+                .read_input_registers(
+                    address=address,
+                    count=count,
+                    device_id=self.unit_id,
+                )
+            ),
+            "FC04 Input {} count {}".format(
+                address,
+                count,
+            ),
+        )
+
+        return result.registers

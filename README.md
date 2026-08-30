@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  🚧 <strong>Active development — DHT11 telemetry and PostgreSQL ingestion</strong>
+  🚧 <strong>Active development — Modbus RTU register map v1 over the Pi-Pico UART link</strong>
 </p>
 
 ---
@@ -97,7 +97,7 @@ ATP is designed to separate application-level concepts — device identity, tele
 [dest_id][src_id][msg_type][seq][payload][checksum]
 ```
 
-Modbus RTU was studied closely during the design of ATP — not as a library to adopt, but as a reference implementation of a mature protocol's approach to framing, addressing, and bus arbitration over RS-485. ATP borrows from that foundation while extending it with asynchronous event reporting, message prioritization, and transport independence that Modbus's polling model does not provide.
+Modbus RTU was studied closely during the design of ATP — not only as a reference, but as an intermediate transport actually implemented for Phase 2: the Pi (PyModbus) drives the Pico (`micropython-modbus`) over the same UART link validated in Phase 1, using a versioned register map ([`docs/Phase 2/p2_modbus_register_map_v1.md`](docs/Phase%202/p2_modbus_register_map_v1.md)) instead of the earlier ad hoc text/JSON commands. This gave the project firsthand experience with a mature protocol's approach to framing, addressing, and bus arbitration before ATP replaces it. ATP borrows from that foundation while extending it with asynchronous event reporting, message prioritization, and transport independence that Modbus's polling model does not provide.
 
 ATP will live in a separate repository so that its protocol specification and implementations can evolve independently from the weather-station application. A direct repository link will be added here once it is publicly available.
 
@@ -246,11 +246,10 @@ The project foundation is operational:
 - PostgreSQL has been installed.
 - The monorepo structure has been established.
 - The initial project documentation is being created.
-- Bidirectional UART communication between the Raspberry Pi 5 and a Raspberry Pi Pico 2 is working, including a command protocol (`PING`, `STATUS`, `START`, `STOP`, `SET_INTERVAL`, `READ_NOW`).
-- A DHT11 sensor node reports JSON telemetry over UART, which the Pi validates, queues, and persists into PostgreSQL without blocking the UART read loop.
-- A first derived metric (dew point, via the Magnus formula) is computed from stored raw readings by an independent process, establishing the raw/derived separation the storage model is built around.
+- **Phase 1 is complete.** Bidirectional UART communication between the Raspberry Pi 5 and a Raspberry Pi Pico 2 works end to end, including a command protocol (`PING`, `STATUS`, `START`, `STOP`, `SET_INTERVAL`, `READ_NOW`), a DHT11 sensor node reporting JSON telemetry that the Pi validates, queues, and persists into PostgreSQL without blocking the UART read loop, connection-liveness tracking with automatic state reconciliation after a reconnect, and a first derived metric (dew point, via the Magnus formula) computed from stored raw readings by an independent process. Validated with a 23h25m continuous run with zero data loss.
+- **Phase 2 is complete.** The ad hoc UART command/telemetry format has been replaced with a Modbus RTU contract. Register Map v1.0 is published and frozen ([`docs/Phase 2/p2_modbus_register_map_v1.md`](docs/Phase%202/p2_modbus_register_map_v1.md)), with a reusable, resilient Pi-side client, Pico-side server firmware implementing the full control contract, and an automated integration suite passing 19/19 tests.
 
-The next technical milestone is formalizing this ad hoc command/telemetry format into the first ATP message implementations, alongside hardening device reliability — reconnection handling, sensor fault reporting — before additional sensors are introduced.
+The next technical milestone is designing the first ATP message implementations on top of this validated Modbus foundation, before the RS-485 migration and additional sensors are introduced.
 
 ---
 
@@ -262,7 +261,7 @@ Development is organized around a small number of major milestones:
 |---|---|---|
 | 1 | Development environment and repository foundation | Complete |
 | 2 | Pi-to-Pico communication and initial ATP messages | In progress |
-| 3 | Sensor acquisition and PostgreSQL ingestion | In progress |
+| 3 | Sensor acquisition and PostgreSQL ingestion | Complete |
 | 4 | RS-485 field bus and distributed device scheduling | Planned |
 | 5 | Backend API, dashboard, and operational monitoring | Planned |
 | 6 | Outdoor hardware, enclosures, and electrical protection | Planned |

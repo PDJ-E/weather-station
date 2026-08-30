@@ -1,30 +1,31 @@
 """
 weather_modbus_client.py
 
-P2-05 — Cliente Modbus RTU reutilizable para Weather Station.
+Weather Station
+P2-05 + P2-07
 
-Raspberry Pi 5:
-    PyModbus 3.15.0
+Cliente Modbus RTU reutilizable y resiliente.
+
+Pi 5:
     /dev/ttyAMA0
     115200 8N1
+    PyModbus 3.15.0
     Unit ID 1
 
-Responsabilidad de este módulo:
-- Encapsular PyModbus.
-- Encapsular offsets del Register Map v1.
-- Leer/escribir Coils y Holding Registers.
-- Leer y decodificar el bloque 200-208.
-- Aplicar scaling y word order del contrato.
+Política P2-07:
+    timeout = 1.0 s
+    retries = 3
 
-NO pertenece todavía a este módulo:
-- reconciliación tras reboot;
-- política avanzada de reconnect;
-- liveness;
-- confirmación semántica de READ_NOW;
-- lógica START/STOP;
-- persistencia en PostgreSQL.
+Transport error:
+    - no crash del proceso
+    - cerrar/resetear transporte local
+    - siguiente operación intenta reconectar
 
-Eso corresponde a P2-06 / P2-07.
+Modbus exception response:
+    - reportar error controlado
+    - NO resetear el enlace
+
+No existen loops infinitos de retry.
 """
 
 from dataclasses import dataclass
@@ -39,28 +40,28 @@ from pymodbus.exceptions import ModbusException
 
 UNIT_ID = 1
 
-# Coils
 COIL_RUN_ENABLE = 100
 COIL_READ_NOW_TRIGGER = 102
 
-# Holding Registers
 HREG_SAMPLE_INTERVAL_S = 101
 
-# Input Registers
 IREG_TELEMETRY_START = 200
 IREG_TELEMETRY_COUNT = 9
 
-IREG_TEMPERATURE_C = 200
-IREG_HUMIDITY_PCT = 201
-IREG_SENSOR_STATUS = 202
-IREG_DEVICE_STATE = 203
-IREG_UPTIME_HIGH = 204
-IREG_UPTIME_LOW = 205
-IREG_SAMPLE_COUNTER_HIGH = 206
-IREG_SAMPLE_COUNTER_LOW = 207
-IREG_REGISTER_MAP_VERSION = 208
-
 EXPECTED_MAP_VERSION = 0x0100
+
+
+# ================================================================
+# Communication policy
+# ================================================================
+
+@dataclass(frozen=True)
+class CommunicationPolicy:
+    timeout_s: float = 1.0
+    retries: int = 3
+
+
+DEFAULT_POLICY = CommunicationPolicy()
 
 
 # ================================================================
@@ -68,27 +69,75 @@ EXPECTED_MAP_VERSION = 0x0100
 # ================================================================
 
 class WeatherModbusError(Exception):
-    """Error base del cliente Modbus de Weather Station."""
+    """Base error."""
 
 
-class WeatherModbusConnectionError(WeatherModbusError):
-    """No fue posible abrir/utilizar el enlace Modbus."""
+class WeatherModbusConnectionError(
+    WeatherModbusError
+):
+    """No se pudo abrir el transporte."""
 
 
-class WeatherModbusResponseError(WeatherModbusError):
-    """El dispositivo respondió con error o respuesta inválida."""
+class WeatherModbusResponseError(
+    WeatherModbusError
+):
+    """
+    Base para errores ocurridos durante
+    una transacción Modbus.
+    """
+
+
+class WeatherModbusTransportError(
+    WeatherModbusResponseError
+):
+    """
+    Timeout, pérdida de conexión,
+    error serial o ModbusIOException.
+    """
+
+
+class WeatherModbusDeviceError(
+    WeatherModbusResponseError
+):
+    """
+    El dispositivo respondió con una
+    Exception Response Modbus válida.
+    """
+
+    def __init__(
+        self,
+        operation,
+        exception_code,
+        response,
+    ):
+        self.operation = operation
+        self.exception_code = exception_code
+        self.response = response
+
+        super().__init__(
+            "{}: Modbus exception code {}: {}".format(
+                operation,
+                exception_code,
+                response,
+            )
+        )
+
+
+class WeatherModbusProtocolError(
+    WeatherModbusResponseError
+):
+    """
+    Respuesta válida a nivel transporte
+    pero incompatible/mal formada.
+    """
 
 
 # ================================================================
-# Modelos
+# Models
 # ================================================================
 
 @dataclass(frozen=True)
 class TelemetrySnapshot:
-    """
-    Snapshot decodificado de Input Registers 200-208.
-    """
-
     temperature_c: float
     humidity_pct: float
 
@@ -101,33 +150,33 @@ class TelemetrySnapshot:
     register_map_version: int
 
     @property
-    def register_map_version_text(self) -> str:
-        major = (self.register_map_version >> 8) & 0xFF
-        minor = self.register_map_version & 0xFF
+    def register_map_version_text(self):
+        major = (
+            self.register_map_version >> 8
+        ) & 0xFF
 
-        return f"v{major}.{minor}"
+        minor = (
+            self.register_map_version
+        ) & 0xFF
+
+        return "v{}.{}".format(
+            major,
+            minor,
+        )
 
 
 @dataclass(frozen=True)
 class ControlState:
-    """
-    Estado observable de la interfaz de control.
-    """
-
     run_enable: bool
     read_now_trigger: bool
     sample_interval_s: int
 
 
 # ================================================================
-# Decoders
+# Decode helpers
 # ================================================================
 
-def decode_int16(value: int) -> int:
-    """
-    Convierte un word Modbus uint16 a int16 two's complement.
-    """
-
+def decode_int16(value):
     value &= 0xFFFF
 
     if value & 0x8000:
@@ -136,88 +185,145 @@ def decode_int16(value: int) -> int:
     return value
 
 
-def decode_uint32(high_word: int, low_word: int) -> int:
-    """
-    Reconstruye uint32 según el contrato P2:
-    HIGH word primero.
-    """
-
+def decode_uint32(
+    high_word,
+    low_word,
+):
     return (
         ((high_word & 0xFFFF) << 16)
-        | (low_word & 0xFFFF)
+        |
+        (low_word & 0xFFFF)
     )
 
 
 # ================================================================
-# Cliente
+# Client
 # ================================================================
 
 class WeatherStationModbusClient:
-    """
-    Cliente Modbus RTU de alto nivel para Weather Station.
-    """
 
     def __init__(
         self,
-        port: str = "/dev/ttyAMA0",
-        baudrate: int = 115200,
-        unit_id: int = UNIT_ID,
-        timeout: float = 1.0,
-        retries: int = 3,
+        port="/dev/ttyAMA0",
+        baudrate=115200,
+        unit_id=UNIT_ID,
+        policy=DEFAULT_POLICY,
     ):
         self.port = port
         self.baudrate = baudrate
         self.unit_id = unit_id
+        self.policy = policy
 
-        # timeout/retries son provisionales durante P2-05.
-        # La política formal se congela en P2-07.
-        self._client = ModbusSerialClient(
-            port=port,
-            baudrate=baudrate,
-            parity="N",
-            stopbits=1,
-            bytesize=8,
-            timeout=timeout,
-            retries=retries,
+        self._client = (
+            self._build_client()
         )
 
         self._is_connected = False
+
+
+    # ------------------------------------------------------------
+    # Client construction
+    # ------------------------------------------------------------
+
+    def _build_client(self):
+
+        return ModbusSerialClient(
+            port=self.port,
+            baudrate=self.baudrate,
+            parity="N",
+            stopbits=1,
+            bytesize=8,
+            timeout=self.policy.timeout_s,
+            retries=self.policy.retries,
+        )
+
 
     # ------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------
 
-    def connect(self) -> None:
-        """
-        Abre el puerto serial.
+    def connect(self):
 
-        Nota:
-        Esto demuestra que el puerto pudo abrirse.
-        No demuestra por sí solo que la Pico esté respondiendo.
-        """
+        if self._is_connected:
+            return
 
         try:
-            connected = self._client.connect()
+
+            connected = (
+                self._client.connect()
+            )
 
         except Exception as exc:
+
+            self._reset_transport()
+
             raise WeatherModbusConnectionError(
-                f"No se pudo abrir {self.port}: {exc}"
+                "No se pudo abrir {}: {}".format(
+                    self.port,
+                    exc,
+                )
             ) from exc
 
         if not connected:
+
+            self._reset_transport()
+
             raise WeatherModbusConnectionError(
-                f"No se pudo abrir {self.port}"
+                "No se pudo abrir {}".format(
+                    self.port
+                )
             )
 
         self._is_connected = True
 
-    def close(self) -> None:
-        self._client.close()
+
+    def close(self):
+
+        try:
+
+            self._client.close()
+
+        finally:
+
+            self._is_connected = False
+
+
+    def _reset_transport(self):
+        """
+        Deja el objeto preparado para una
+        conexión limpia en el siguiente request.
+        """
+
+        try:
+
+            self._client.close()
+
+        except Exception:
+
+            pass
+
         self._is_connected = False
 
+        # Objeto PyModbus nuevo para evitar
+        # conservar estado serial dudoso.
+
+        self._client = (
+            self._build_client()
+        )
+
+
+    def _ensure_connected(self):
+
+        if not self._is_connected:
+            self.connect()
+
+
     def __enter__(self):
+
         self.connect()
+
         return self
+
 
     def __exit__(
         self,
@@ -225,210 +331,268 @@ class WeatherStationModbusClient:
         exc_value,
         traceback,
     ):
+
         self.close()
 
-    # ------------------------------------------------------------
-    # Response validation
-    # ------------------------------------------------------------
 
-    def _require_connected(self) -> None:
-        if not self._is_connected:
-            raise WeatherModbusConnectionError(
-                "El cliente Modbus no está conectado."
-            )
+    # ============================================================
+    # Transaction wrapper
+    # ============================================================
 
-    @staticmethod
-    def _require_ok(result, operation: str):
+    def _execute(
+        self,
+        operation,
+        description,
+    ):
+        """
+        ÚNICO punto donde las operaciones
+        PyModbus atraviesan la política P2-07.
+        """
+
+        self._ensure_connected()
+
+        try:
+
+            result = operation()
+
+        except (
+            ModbusException,
+            OSError,
+        ) as exc:
+
+            # Transport failure.
+            #
+            # No dejamos el objeto serial en
+            # estado potencialmente inconsistente.
+
+            self._reset_transport()
+
+            raise WeatherModbusTransportError(
+                "{}: {}".format(
+                    description,
+                    exc,
+                )
+            ) from exc
+
+
         if result is None:
-            raise WeatherModbusResponseError(
-                f"{operation}: respuesta vacía."
+
+            self._reset_transport()
+
+            raise WeatherModbusTransportError(
+                "{}: respuesta vacía".format(
+                    description
+                )
             )
+
+
+        # Una Modbus Exception Response es una
+        # respuesta VÁLIDA del dispositivo.
+        #
+        # Por tanto NO reseteamos el transporte.
 
         if result.isError():
-            raise WeatherModbusResponseError(
-                f"{operation}: {result}"
+
+            exception_code = getattr(
+                result,
+                "exception_code",
+                None,
             )
+
+            raise WeatherModbusDeviceError(
+                operation=description,
+                exception_code=exception_code,
+                response=result,
+            )
+
 
         return result
 
-    # ------------------------------------------------------------
+
+    # ============================================================
     # Low-level map access
-    # ------------------------------------------------------------
+    # ============================================================
 
-    def _read_coil(self, address: int) -> bool:
-        self._require_connected()
+    def _read_coil(
+        self,
+        address,
+        device_id=None,
+    ):
 
-        try:
-            result = self._client.read_coils(
-                address=address,
-                count=1,
-                device_id=self.unit_id,
-            )
-
-        except (ModbusException, OSError) as exc:
-            raise WeatherModbusResponseError(
-                f"Error leyendo Coil {address}: {exc}"
-            ) from exc
-
-        result = self._require_ok(
-            result,
-            f"Read Coil {address}",
+        target = (
+            self.unit_id
+            if device_id is None
+            else device_id
         )
 
-        return bool(result.bits[0])
+        result = self._execute(
+            lambda: self._client.read_coils(
+                address=address,
+                count=1,
+                device_id=target,
+            ),
+            "FC01 Coil {} Unit {}".format(
+                address,
+                target,
+            ),
+        )
+
+        if not result.bits:
+
+            raise WeatherModbusProtocolError(
+                "FC01 Coil {} sin datos".format(
+                    address
+                )
+            )
+
+        return bool(
+            result.bits[0]
+        )
+
 
     def _write_coil(
         self,
-        address: int,
-        value: bool,
-    ) -> None:
-        self._require_connected()
+        address,
+        value,
+    ):
 
-        try:
-            result = self._client.write_coil(
+        self._execute(
+            lambda: self._client.write_coil(
                 address=address,
                 value=bool(value),
                 device_id=self.unit_id,
-            )
-
-        except (ModbusException, OSError) as exc:
-            raise WeatherModbusResponseError(
-                f"Error escribiendo Coil {address}: {exc}"
-            ) from exc
-
-        self._require_ok(
-            result,
-            f"Write Coil {address}",
+            ),
+            "FC05 Coil {}".format(
+                address
+            ),
         )
+
 
     def _read_holding_register(
         self,
-        address: int,
-    ) -> int:
-        self._require_connected()
+        address,
+        device_id=None,
+    ):
 
-        try:
-            result = self._client.read_holding_registers(
-                address=address,
-                count=1,
-                device_id=self.unit_id,
-            )
+        target = (
+            self.unit_id
+            if device_id is None
+            else device_id
+        )
 
-        except (ModbusException, OSError) as exc:
-            raise WeatherModbusResponseError(
-                f"Error leyendo Holding Register {address}: {exc}"
-            ) from exc
-
-        result = self._require_ok(
-            result,
-            f"Read Holding Register {address}",
+        result = self._execute(
+            lambda: (
+                self._client
+                .read_holding_registers(
+                    address=address,
+                    count=1,
+                    device_id=target,
+                )
+            ),
+            "FC03 Holding {} Unit {}".format(
+                address,
+                target,
+            ),
         )
 
         if len(result.registers) != 1:
-            raise WeatherModbusResponseError(
-                f"Holding Register {address}: "
-                f"se esperaba 1 word y llegaron "
-                f"{len(result.registers)}."
+
+            raise WeatherModbusProtocolError(
+                "Holding {}: se esperaba "
+                "1 register y llegaron {}".format(
+                    address,
+                    len(result.registers),
+                )
             )
 
         return result.registers[0]
 
+
     def _write_holding_register(
         self,
-        address: int,
-        value: int,
-    ) -> None:
-        self._require_connected()
+        address,
+        value,
+    ):
 
-        try:
-            result = self._client.write_register(
-                address=address,
-                value=value,
-                device_id=self.unit_id,
-            )
-
-        except (ModbusException, OSError) as exc:
-            raise WeatherModbusResponseError(
-                f"Error escribiendo Holding Register "
-                f"{address}: {exc}"
-            ) from exc
-
-        self._require_ok(
-            result,
-            f"Write Holding Register {address}",
+        self._execute(
+            lambda: (
+                self._client.write_register(
+                    address=address,
+                    value=value,
+                    device_id=self.unit_id,
+                )
+            ),
+            "FC06 Holding {}".format(
+                address
+            ),
         )
 
+
     # ============================================================
-    # Public control interface
+    # Public control API
     # ============================================================
 
-    def get_run_enable(self) -> bool:
+    def get_run_enable(self):
+
         return self._read_coil(
             COIL_RUN_ENABLE
         )
 
+
     def set_run_enable(
         self,
-        enabled: bool,
-    ) -> None:
+        enabled,
+    ):
+
         self._write_coil(
             COIL_RUN_ENABLE,
             enabled,
         )
 
-    def get_read_now_trigger(self) -> bool:
+
+    def get_read_now_trigger(self):
+
         return self._read_coil(
             COIL_READ_NOW_TRIGGER
         )
 
-    def trigger_read_now(self) -> None:
-        """
-        Escribe 1 sobre Coil 102.
 
-        P2-05 valida únicamente que el cliente puede emitir
-        correctamente la escritura.
-
-        La semántica:
-        - async,
-        - self-clearing,
-        - sample_counter confirmation
-
-        se implementa y valida en P2-06.
-        """
+    def trigger_read_now(self):
 
         self._write_coil(
             COIL_READ_NOW_TRIGGER,
             True,
         )
 
-    def get_sample_interval(self) -> int:
-        return self._read_holding_register(
-            HREG_SAMPLE_INTERVAL_S
+
+    def get_sample_interval(self):
+
+        return (
+            self._read_holding_register(
+                HREG_SAMPLE_INTERVAL_S
+            )
         )
+
 
     def set_sample_interval(
         self,
-        seconds: int,
-    ) -> None:
-        """
-        Escribe Holding Register 101.
+        seconds,
+    ):
 
-        La validación definitiva del rango y Exception 03
-        pertenece al contrato del servidor/P2-06/P2-08.
+        if not isinstance(
+            seconds,
+            int,
+        ):
 
-        El cliente hace aquí una validación básica para no
-        generar accidentalmente una escritura obviamente inválida.
-        """
-
-        if not isinstance(seconds, int):
             raise ValueError(
-                "sample_interval_s debe ser int."
+                "sample_interval_s debe ser int"
             )
 
         if not 2 <= seconds <= 3600:
+
             raise ValueError(
                 "sample_interval_s debe estar "
-                "entre 2 y 3600 segundos."
+                "entre 2 y 3600"
             )
 
         self._write_holding_register(
@@ -436,150 +600,169 @@ class WeatherStationModbusClient:
             seconds,
         )
 
+
     # ============================================================
-    # Input Register block
+    # Telemetry
     # ============================================================
 
-    def read_telemetry(self) -> TelemetrySnapshot:
-        """
-        Lee Input Registers 200-208 en UNA transacción FC04.
+    def read_telemetry(self):
 
-        Esto conserva:
-        - snapshot coherente;
-        - uint32 high-word-first;
-        - scaling x100.
-        """
-
-        self._require_connected()
-
-        try:
-            result = self._client.read_input_registers(
-                address=IREG_TELEMETRY_START,
-                count=IREG_TELEMETRY_COUNT,
-                device_id=self.unit_id,
-            )
-
-        except (ModbusException, OSError) as exc:
-            raise WeatherModbusResponseError(
-                f"Error leyendo Input Registers "
-                f"200-208: {exc}"
-            ) from exc
-
-        result = self._require_ok(
-            result,
-            "Read Input Registers 200-208",
+        result = self._execute(
+            lambda: (
+                self._client
+                .read_input_registers(
+                    address=(
+                        IREG_TELEMETRY_START
+                    ),
+                    count=(
+                        IREG_TELEMETRY_COUNT
+                    ),
+                    device_id=self.unit_id,
+                )
+            ),
+            "FC04 Input 200-208",
         )
 
-        registers = result.registers
+        registers = (
+            result.registers
+        )
 
-        if len(registers) != IREG_TELEMETRY_COUNT:
-            raise WeatherModbusResponseError(
+        if (
+            len(registers)
+            != IREG_TELEMETRY_COUNT
+        ):
+
+            raise WeatherModbusProtocolError(
                 "Se esperaban 9 Input Registers "
-                f"y llegaron {len(registers)}."
+                "y llegaron {}".format(
+                    len(registers)
+                )
             )
 
-        # --------------------------------------------------------
-        # 200 — signed int16 x100
-        # --------------------------------------------------------
-
-        temperature_raw = decode_int16(
-            registers[0]
+        temperature_raw = (
+            decode_int16(
+                registers[0]
+            )
         )
 
         temperature_c = (
-            temperature_raw / 100.0
+            temperature_raw
+            / 100.0
         )
-
-        # --------------------------------------------------------
-        # 201 — uint16 x100
-        # --------------------------------------------------------
 
         humidity_pct = (
-            registers[1] / 100.0
+            registers[1]
+            / 100.0
         )
 
-        # --------------------------------------------------------
-        # 202 / 203 enums
-        # --------------------------------------------------------
-
-        sensor_status = registers[2]
-        device_state = registers[3]
-
-        # --------------------------------------------------------
-        # 204-205 uint32
-        # --------------------------------------------------------
-
-        uptime_s = decode_uint32(
-            registers[4],
-            registers[5],
+        uptime_s = (
+            decode_uint32(
+                registers[4],
+                registers[5],
+            )
         )
 
-        # --------------------------------------------------------
-        # 206-207 uint32
-        # --------------------------------------------------------
-
-        sample_counter = decode_uint32(
-            registers[6],
-            registers[7],
-        )
-
-        # --------------------------------------------------------
-        # 208
-        # --------------------------------------------------------
-
-        register_map_version = (
-            registers[8]
+        sample_counter = (
+            decode_uint32(
+                registers[6],
+                registers[7],
+            )
         )
 
         return TelemetrySnapshot(
             temperature_c=temperature_c,
             humidity_pct=humidity_pct,
-            sensor_status=sensor_status,
-            device_state=device_state,
+            sensor_status=registers[2],
+            device_state=registers[3],
             uptime_s=uptime_s,
             sample_counter=sample_counter,
-            register_map_version=register_map_version,
+            register_map_version=registers[8],
         )
 
+
     # ============================================================
-    # Convenience operations
+    # Convenience
     # ============================================================
 
-    def read_control_state(self) -> ControlState:
-        """
-        Lee los tres objetos de control del mapa.
-        """
+    def read_control_state(self):
 
         return ControlState(
-            run_enable=self.get_run_enable(),
-            read_now_trigger=self.get_read_now_trigger(),
-            sample_interval_s=self.get_sample_interval(),
+            run_enable=(
+                self.get_run_enable()
+            ),
+            read_now_trigger=(
+                self.get_read_now_trigger()
+            ),
+            sample_interval_s=(
+                self.get_sample_interval()
+            ),
         )
 
-    def read_register_map_version(self) -> int:
-        """
-        Lee el snapshot completo y retorna map version.
 
-        Por ahora aprovechamos el block read normal de 200-208.
-        """
+    def read_register_map_version(self):
 
         return (
             self.read_telemetry()
             .register_map_version
         )
 
-    def validate_register_map_version(self) -> None:
-        """
-        Verifica que la Pico implemente Register Map v1.0.
-        """
+
+    def validate_register_map_version(self):
 
         version = (
             self.read_register_map_version()
         )
 
         if version != EXPECTED_MAP_VERSION:
-            raise WeatherModbusResponseError(
+
+            raise WeatherModbusProtocolError(
                 "Register Map incompatible: "
-                f"esperado 0x{EXPECTED_MAP_VERSION:04X}, "
-                f"recibido 0x{version:04X}."
+                "esperado 0x{:04X}, "
+                "recibido 0x{:04X}".format(
+                    EXPECTED_MAP_VERSION,
+                    version,
+                )
             )
+
+
+    # ============================================================
+    # P2-07 diagnostics
+    # ============================================================
+
+    def diagnostic_probe_unit(
+        self,
+        unit_id,
+    ):
+        """
+        Lee Coil 100 de un Unit ID arbitrario.
+
+        Solo diagnóstico/integration testing.
+
+        Unit inexistente:
+            -> timeout
+            -> retries
+            -> WeatherModbusTransportError
+        """
+
+        return self._read_coil(
+            COIL_RUN_ENABLE,
+            device_id=unit_id,
+        )
+
+
+    def diagnostic_read_holding(
+        self,
+        address,
+    ):
+        """
+        Permite provocar una Exception Response
+        con una dirección inexistente.
+
+        Solo diagnóstico/integration testing.
+        """
+
+        return (
+            self._read_holding_register(
+                address
+            )
+        )

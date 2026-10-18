@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pi 5 P4-08 RS485 bench test. Requires pyserial and python-gpiod v2.
 
-Physical Pi: GPIO14 TX (pin 8), GPIO15 RX (pin 10), GPIO17 RTS (pin 11),
+Physical Pi: GPIO14 TX to BLUE RX-I (pin 8), GPIO15 RX from YELLOW TX-O (pin 10), GPIO17 RTS (pin 11),
 3.3 V (pin 1), GND (pin 6). Both SparkFun RTS pins HIGH=TX, LOW=RX.
 Pico: GP0 TX, GP1 RX, GP6 RTS, VCC 3V3OUT. Between modules: A-A B-B GND-GND.
 """

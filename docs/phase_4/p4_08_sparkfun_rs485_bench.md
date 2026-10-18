@@ -18,7 +18,9 @@ Verified from SparkFun RS485_Breakout_v10 schematic; observed wire colors in pho
 
 Supply the SparkFun modules at **3.3V only**. The SP3485 silicon datasheet specifies 3.3V ± 5% operating supply, notwithstanding the silkscreen "3-5".
 
-SparkFun names RX-I and TX-O from the TRANSCEIVER perspective: MCU TX goes to blue RX-I/DI, MCU RX comes from yellow TX-O/RO. Never wire blue to MCU RX.\n\nRTS HIGH enables transmit and disables receive. RTS LOW enables receive and disables transmit. **Idle LOW on both ends**.
+SparkFun names RX-I and TX-O from the TRANSCEIVER perspective: MCU TX goes to blue RX-I/DI, MCU RX comes from yellow TX-O/RO. Never wire blue to MCU RX.
+
+RTS HIGH enables transmit and disables receive. RTS LOW enables receive and disables transmit. **Idle LOW on both ends**.
 
 ## Three-wire differential bus connector (SparkFun JP3)
 

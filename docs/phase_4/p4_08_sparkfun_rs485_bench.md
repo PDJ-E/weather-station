@@ -11,14 +11,14 @@ Verified from SparkFun RS485_Breakout_v10 schematic; observed wire colors in pho
 | Wire | Board label | Raspberry Pi 5 | Raspberry Pi Pico 2 |
 |---|---|---|---|
 | Red | 3-5 / VCC | 3V3, physical pin 1 | 3V3(OUT), physical pin 36 |
-| Blue | RX | GPIO15 / UART RX, pin 10 | GP1 / UART RX, pin 2 |
-| Yellow | TX | GPIO14 / UART TX, pin 8 | GP0 / UART TX, pin 1 |
+| Blue | RX-I (transceiver DI input) | GPIO14 / UART TX, pin 8 | GP0 / UART TX, pin 1 |
+| Yellow | TX-O (transceiver RO output) | GPIO15 / UART RX, pin 10 | GP1 / UART RX, pin 2 |
 | Green | RTS | GPIO17, pin 11 | GP6, pin 9 |
 | Black | GND | GND, pin 6 | GND, pin 3 |
 
 Supply the SparkFun modules at **3.3V only**. The SP3485 silicon datasheet specifies 3.3V ± 5% operating supply, notwithstanding the silkscreen "3-5".
 
-RTS HIGH enables transmit and disables receive. RTS LOW enables receive and disables transmit. **Idle LOW on both ends**.
+SparkFun names RX-I and TX-O from the TRANSCEIVER perspective: MCU TX goes to blue RX-I/DI, MCU RX comes from yellow TX-O/RO. Never wire blue to MCU RX.\n\nRTS HIGH enables transmit and disables receive. RTS LOW enables receive and disables transmit. **Idle LOW on both ends**.
 
 ## Three-wire differential bus connector (SparkFun JP3)
 

@@ -94,6 +94,47 @@ def read_response(uart):
     return None, bytes(discarded)
 
 
+def transmit_frame(uart, gpio, frame, margin_chars=2):
+    """
+    Transmite una trama RS-485 y vuelve a recepción lo antes posible.
+
+    Método "computed" validado con rs485_turnaround_diag (P4-08):
+    no usa uart.flush(). En Linux, tcdrain() regresa en escalones de
+    ~4 ms (medido: 4-20 ms) y la respuesta se perdía con el receptor de
+    la Pi todavía deshabilitado. Con espera activa calculada, la
+    liberación medida en hardware fue ~150-200 us (peor caso 5 ms bajo
+    carga).
+
+    El tiempo de trama se cuenta desde que write() RETORNA: la
+    transmisión ya empezó, así que el margen es conservador y no se
+    corta el último byte.
+
+    8N1 = 10 bits por byte.
+    """
+
+    char_time_s = 10 / BAUDRATE
+    frame_time_s = len(frame) * char_time_s
+    margin_s = margin_chars * char_time_s
+
+    gpio.set_value(RTS_GPIO, Value.ACTIVE)
+    time.sleep(0.00005)
+
+    try:
+        written = uart.write(frame)
+
+        if written != len(frame):
+            raise IOError("Incomplete UART write")
+
+        deadline = time.perf_counter() + frame_time_s + margin_s
+
+        # Espera activa: más precisa que time.sleep() o flush().
+        while time.perf_counter() < deadline:
+            pass
+
+    finally:
+        gpio.set_value(RTS_GPIO, Value.INACTIVE)
+
+
 def find_gpiochip():
     for path in sorted(glob.glob("/dev/gpiochip*")):
         try:
@@ -171,25 +212,7 @@ def main():
 
             uart.reset_input_buffer()
 
-            # Enable RS485 transmission.
-
-            gpio.set_value(RTS_GPIO, Value.ACTIVE)
-
-            time.sleep(0.00005)
-
-            try:
-                uart.write(request)
-                uart.flush()
-
-                # Small guard interval after UART drain.
-                time.sleep(0.00015)
-
-            finally:
-                # Return to receive mode.
-                gpio.set_value(
-                    RTS_GPIO,
-                    Value.INACTIVE,
-                )
+            transmit_frame(uart, gpio, request)
 
             print("[3] Request transmitted")
             print("[4] Waiting for response...")

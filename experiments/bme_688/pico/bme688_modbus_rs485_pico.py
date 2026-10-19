@@ -102,6 +102,12 @@ UNIT_ID = 1
 # RS-485 half-duplex direction control pin (RTS)
 RS485_RTS_PIN = 6
 
+# Turnaround: pausa antes de responder para que la Pi vuelva a
+# recepción. Validado con rs485_turnaround_diag (P4-08): con el método
+# "computed" en la Pi, la peor liberación de RTS medida en hardware fue
+# 5.0 ms bajo carga (232 us en reposo). 10 ms = ~2x de margen.
+RS485_TURNAROUND_MS = 10
+
 # ================================================================
 # Register Map v1.1
 # ================================================================
@@ -391,6 +397,10 @@ class RS485UART:
         return self.uart.read(n)
 
     def write(self, data):
+        # Turnaround: dar tiempo a la Pi para bajar su RTS y volver a
+        # recepción. Sin esta pausa, la respuesta puede perderse completa.
+        time.sleep_ms(RS485_TURNAROUND_MS) # type: ignore
+
         # Habilitar transmisor RS-485
         self.direction_pin.value(1)
 

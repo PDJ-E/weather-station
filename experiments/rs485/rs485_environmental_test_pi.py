@@ -17,7 +17,18 @@ Tests:
 Transport:
     /dev/ttyAMA0
     115200 8N1
-    RTS: GPIO17
+    RTS: GPIO17 (método "computed", sin flush())
+
+Reliability:
+    Cada transacción Modbus se reintenta hasta MODBUS_RETRIES veces
+    ante fallos de transporte (timeout, CRC, basura, respuesta
+    incompleta), igual que la política retries=3 del cliente PyModbus
+    de P2/P3. Las respuestas de excepción Modbus NO se reintentan:
+    son una respuesta válida de la Pico.
+
+    El diagnóstico de turnaround (P4-08) midió ~0.05% de peticiones
+    que no llegan válidas a la Pico, independientemente del método:
+    los reintentos son obligatorios.
 
 Acquisitions:
     3 samples, 5 seconds apart
@@ -42,6 +53,24 @@ RTS_GPIO = 17
 SAMPLES = 3
 SAMPLE_PERIOD_S = 5.0
 
+# Reintentos por transacción (además del primer intento).
+MODBUS_RETRIES = 3
+
+# Tiempo máximo de espera de respuesta por intento.
+# Turnaround de la Pico (10 ms) + procesamiento + margen amplio.
+RESPONSE_TIMEOUT_S = 0.3
+
+# Pausa antes de reintentar.
+RETRY_DELAY_S = 0.05
+
+
+class ModbusTransportError(Exception):
+    """Fallo de transporte: se puede reintentar."""
+
+
+class ModbusExceptionResponse(Exception):
+    """La Pico respondió con una excepción Modbus: no se reintenta."""
+
 
 def crc16(data):
     crc = 0xFFFF
@@ -58,6 +87,47 @@ def crc16(data):
     return crc
 
 
+def transmit_frame(uart, gpio, frame, margin_chars=2):
+    """
+    Transmite una trama RS-485 y vuelve a recepción lo antes posible.
+
+    Método "computed" validado con rs485_turnaround_diag (P4-08):
+    no usa uart.flush(). En Linux, tcdrain() regresa en escalones de
+    ~4 ms (medido: 4-20 ms) y la respuesta se perdía con el receptor de
+    la Pi todavía deshabilitado. Con espera activa calculada, la
+    liberación medida en hardware fue ~150-200 us (peor caso 5 ms bajo
+    carga).
+
+    El tiempo de trama se cuenta desde que write() RETORNA: la
+    transmisión ya empezó, así que el margen es conservador y no se
+    corta el último byte.
+
+    8N1 = 10 bits por byte.
+    """
+
+    char_time_s = 10 / BAUDRATE
+    frame_time_s = len(frame) * char_time_s
+    margin_s = margin_chars * char_time_s
+
+    gpio.set_value(RTS_GPIO, Value.ACTIVE)
+    time.sleep(0.00005)
+
+    try:
+        written = uart.write(frame)
+
+        if written != len(frame):
+            raise IOError("Incomplete UART write")
+
+        deadline = time.perf_counter() + frame_time_s + margin_s
+
+        # Espera activa: más precisa que time.sleep() o flush().
+        while time.perf_counter() < deadline:
+            pass
+
+    finally:
+        gpio.set_value(RTS_GPIO, Value.INACTIVE)
+
+
 def find_gpiochip():
     for path in sorted(glob.glob("/dev/gpiochip*")):
         try:
@@ -70,13 +140,13 @@ def find_gpiochip():
     raise RuntimeError("Could not locate GPIO17")
 
 
-def read_exact(uart, count, timeout=2.0):
+def read_exact(uart, count, timeout=RESPONSE_TIMEOUT_S):
     data = bytearray()
     deadline = time.monotonic() + timeout
 
     while len(data) < count:
         if time.monotonic() >= deadline:
-            raise TimeoutError(
+            raise ModbusTransportError(
                 f"Expected {count} bytes, received {len(data)}"
             )
 
@@ -88,7 +158,7 @@ def read_exact(uart, count, timeout=2.0):
     return bytes(data)
 
 
-def read_header(uart, function, timeout=2.0):
+def read_header(uart, function, timeout=RESPONSE_TIMEOUT_S):
     """
     Busca el inicio de la respuesta: Unit ID seguido del function
     code esperado (o su variante de excepción, function | 0x80).
@@ -127,7 +197,7 @@ def read_header(uart, function, timeout=2.0):
 
         previous = current
 
-    raise TimeoutError(
+    raise ModbusTransportError(
         "No Modbus response header within "
         f"{timeout} s (junk: {discarded.hex(' ') or 'none'})"
     )
@@ -139,12 +209,50 @@ class RS485Modbus:
         self.uart = uart
         self.gpio = gpio
 
+        self.transactions = 0
+        self.retries_used = 0
+
         self.gpio.set_value(
             RTS_GPIO,
             Value.INACTIVE
         )
 
     def exchange(self, function, payload):
+        """
+        Transacción Modbus con reintentos ante fallos de transporte.
+
+        Seguro de reintentar: lecturas (FC01/FC04) son idempotentes, y
+        FC05 READ_NOW=ON también (si el primer intento sí llegó, el
+        trigger sigue pendiente y repetirlo no genera otra adquisición).
+        """
+
+        self.transactions += 1
+        last_error = None
+
+        for attempt in range(MODBUS_RETRIES + 1):
+
+            if attempt > 0:
+                self.retries_used += 1
+
+                print(
+                    f"    [RS485] retry {attempt}/{MODBUS_RETRIES} "
+                    f"(FC{function:02d}): {last_error}"
+                )
+
+                time.sleep(RETRY_DELAY_S)
+
+            try:
+                return self._exchange_once(function, payload)
+
+            except ModbusTransportError as exc:
+                last_error = exc
+
+        raise ModbusTransportError(
+            f"FC{function:02d} failed after "
+            f"{MODBUS_RETRIES + 1} attempts: {last_error}"
+        )
+
+    def _exchange_once(self, function, payload):
 
         request_data = (
             bytes([UNIT_ID, function])
@@ -158,29 +266,7 @@ class RS485Modbus:
 
         self.uart.reset_input_buffer()
 
-        # Transmit
-        self.gpio.set_value(
-            RTS_GPIO,
-            Value.ACTIVE
-        )
-
-        time.sleep(0.00005)
-
-        try:
-            written = self.uart.write(request)
-
-            if written != len(request):
-                raise IOError("Incomplete UART write")
-
-            self.uart.flush()
-            time.sleep(0.00015)
-
-        finally:
-            # Receive
-            self.gpio.set_value(
-                RTS_GPIO,
-                Value.INACTIVE
-            )
+        transmit_frame(self.uart, self.gpio, request)
 
         # Read response header, skipping junk bytes from the bus
         header = read_header(self.uart, function)
@@ -191,14 +277,11 @@ class RS485Modbus:
             response = header + rest
 
             if crc16(response) != 0:
-                raise RuntimeError("CRC error in exception")
+                raise ModbusTransportError("CRC error in exception")
 
-            raise RuntimeError(
+            raise ModbusExceptionResponse(
                 f"Modbus exception: {rest[0]}"
             )
-
-        if header[1] != function:
-            raise RuntimeError("Unexpected function code")
 
         if function in (1, 3, 4):
 
@@ -215,7 +298,7 @@ class RS485Modbus:
             raise RuntimeError("Unsupported function")
 
         if crc16(response) != 0:
-            raise RuntimeError("Modbus CRC mismatch")
+            raise ModbusTransportError("Modbus CRC mismatch")
 
         return response
 
@@ -327,7 +410,7 @@ def main():
             bytesize=8,
             parity="N",
             stopbits=1,
-            timeout=0.15
+            timeout=0.02
         ) as uart:
 
             client = RS485Modbus(uart, gpio)
@@ -433,6 +516,10 @@ def main():
     print()
     print("=" * 55)
     print(f" RESULTS: {successful}/{SAMPLES} successful")
+    print(
+        f" Modbus transactions: {client.transactions}, "
+        f"retries used: {client.retries_used}"
+    )
     print("=" * 55)
 
     if successful == SAMPLES:

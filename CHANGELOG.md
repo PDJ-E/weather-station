@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows [Semantic Versioning](https://semver.org/) once the project reaches 1.0.0. While the project is on a `0.x` version, minor releases (`0.X.0`) may include breaking changes as the architecture is still being established.
 
+## [Unreleased]
+
+### Added
+
+- P4-08 RS-485 bench tests for the SparkFun RS-485 breakouts: a Modbus link test and an environmental (DHT11 + BME688) test for the Pi 5, and the Pico firmware `bme688_modbus_rs485_pico.py` with RTS direction control on GP6.
+- RS-485 turnaround diagnostic (`rs485_turnaround_diag_pi.py` / `rs485_turnaround_diag_pico.py`) that sweeps the Pi direction-control method and the Pico turnaround, with optional hardware timing of the Pi's RTS release through a sense wire.
+- Bounded retries (3) for transport failures in the RS-485 environmental test client; Modbus exception responses are not retried.
+- `docs/next_steps.md`, tracking deferred technical work with its evidence (kernel RS-485 mode on the Pi 5, production retry policy, turnaround soak test, outdoor bus biasing).
+
+### Changed
+
+- The Pi RS-485 scripts release RTS after a computed frame time (busy-wait) instead of `uart.flush()`: measured RTS release went from 4–20 ms to ~150–200 µs (5 ms worst case under load).
+- The Pico waits `RS485_TURNAROUND_MS = 10` before enabling its RS-485 driver, about twice the worst Pi release measured under load.
+
+### Fixed
+
+- The Pico stopped responding after the first RS-485 exchange: with DE and /RE tied to RTS, its RX line floated during its own transmission and the RP2350 default pull-down injected a junk byte that permanently misaligned the fixed-length frame reader. Fixed with an internal pull-up on GP1 and a frame reader that resynchronizes on Unit ID + function code + CRC.
+- The Pi intermittently lost whole RS-485 responses because `tcdrain()` kept its receiver disabled for several milliseconds after transmitting.
+
 ## [0.7.0] - 2026-08-30
 
 ### Added

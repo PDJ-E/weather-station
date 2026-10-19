@@ -320,6 +320,34 @@ server = ModbusRTU(
 
 
 # ================================================================
+# P4-08 — Pull-up interno en RX (GP1)
+#
+# En la SparkFun, RTS controla DE y /RE a la vez. Mientras la Pico
+# transmite, /RE = HIGH y la salida RO del transceptor queda en alta
+# impedancia. Sin pull-up, el pull-down por defecto del RP2350 lleva
+# RX a LOW y la UART recibe basura (break / 0x00) tras cada respuesta.
+#
+# Se aplica DESPUÉS de crear el servidor, porque ModbusRTU configura
+# la UART (y la función del pin) en su constructor.
+#
+# Alternativa por hardware: resistencia de 10 kΩ entre GP1 y 3V3.
+# ================================================================
+
+try:
+    Pin(
+        UART_RX_PIN,
+        Pin.ALT,
+        pull=Pin.PULL_UP,
+        alt=Pin.ALT_UART,
+    )
+    print("[RS485] RX pull-up enabled on GP", UART_RX_PIN)
+
+except (AttributeError, ValueError) as exc:
+    print("[RS485] WARNING: RX pull-up not applied:", repr(exc))
+    print("[RS485] Use external 10k pull-up GP1 -> 3V3")
+
+
+# ================================================================
 # P4-08 — SparkFun RS-485 half-duplex
 #
 # Board : Raspberry Pi Pico 2

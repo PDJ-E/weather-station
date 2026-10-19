@@ -337,7 +337,7 @@ class DiagClient:
             if status == "ok":
                 regs = struct.unpack(
                     f">{IREG_STATS_COUNT}H",
-                    response[3:-2],
+                    response[3:-2], # type: ignore
                 )
                 return {
                     "exchanges": regs[0],

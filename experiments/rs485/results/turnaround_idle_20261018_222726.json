@@ -1,0 +1,477 @@
+{
+  "label": "idle",
+  "timestamp": "20261018_222726",
+  "baudrate": 115200,
+  "n_per_step": 200,
+  "pause_ms": 100,
+  "results": {
+    "flush": [
+      {
+        "turnaround_ms": 0,
+        "n": 200,
+        "counts": {
+          "ok": 1,
+          "exception": 0,
+          "timeout": 199,
+          "junk": 0
+        },
+        "ok_pct": 0.5,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 6422.285554880445,
+          "p99": 10347.972555326933,
+          "max": 10441.7125553381,
+          "mean": 6480.051185561833
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 6288,
+          "max_release_us": 10368,
+          "mean_release_us": 6411,
+          "late_releases": 200,
+          "no_fall_seen": 0,
+          "turnaround_ms": 0,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 1,
+        "n": 200,
+        "counts": {
+          "ok": 0,
+          "exception": 0,
+          "timeout": 200,
+          "junk": 0
+        },
+        "ok_pct": 0.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 4358.645556284399,
+          "p99": 4417.5715561222105,
+          "max": 8284.110554531153,
+          "mean": 4373.914760534616
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 4332,
+          "max_release_us": 8221,
+          "mean_release_us": 4304,
+          "late_releases": 200,
+          "no_fall_seen": 0,
+          "turnaround_ms": 1,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 2,
+        "n": 200,
+        "counts": {
+          "ok": 1,
+          "exception": 0,
+          "timeout": 199,
+          "junk": 0
+        },
+        "ok_pct": 0.5,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 4359.663555523083,
+          "p99": 6660.784555141517,
+          "max": 8358.276556908904,
+          "mean": 4399.231330561533
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 4301,
+          "max_release_us": 8283,
+          "mean_release_us": 4330,
+          "late_releases": 199,
+          "no_fall_seen": 0,
+          "turnaround_ms": 2,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 3,
+        "n": 200,
+        "counts": {
+          "ok": 0,
+          "exception": 0,
+          "timeout": 200,
+          "junk": 0
+        },
+        "ok_pct": 0.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 4355.97855583991,
+          "p99": 8336.480556398683,
+          "max": 8377.350556192041,
+          "mean": 4435.196005587285
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 4314,
+          "max_release_us": 8300,
+          "mean_release_us": 4364,
+          "late_releases": 200,
+          "no_fall_seen": 0,
+          "turnaround_ms": 3,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 5,
+        "n": 200,
+        "counts": {
+          "ok": 78,
+          "exception": 0,
+          "timeout": 60,
+          "junk": 62
+        },
+        "ok_pct": 39.0,
+        "junk_bytes_total": 357,
+        "pi_overrun_us": {
+          "p50": 5283.992556077364,
+          "p99": 8373.443556128123,
+          "max": 10121.806556061429,
+          "mean": 5588.279400534602
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 7435,
+          "max_release_us": 10054,
+          "mean_release_us": 5520,
+          "late_releases": 124,
+          "no_fall_seen": 0,
+          "turnaround_ms": 5,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 10,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 5631.028556753235,
+          "p99": 7547.6505539781,
+          "max": 8142.555556777452,
+          "mean": 5621.291895530602
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 4305,
+          "max_release_us": 8082,
+          "mean_release_us": 5553,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 10,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 20,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 5854.454555891506,
+          "p99": 11254.819556132943,
+          "max": 19977.78255507809,
+          "mean": 6071.068285599621
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 3667,
+          "max_release_us": 19906,
+          "mean_release_us": 5997,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 20,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 30,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 5984.749556308897,
+          "p99": 10274.434555402777,
+          "max": 10490.767556338042,
+          "mean": 6030.643315488205
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 4101,
+          "max_release_us": 10393,
+          "mean_release_us": 5960,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 30,
+          "sense_connected": true
+        }
+      }
+    ],
+    "computed": [
+      {
+        "turnaround_ms": 0,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.77355528278792,
+          "p99": 235.754554968379,
+          "max": 334.7545557416096,
+          "mean": 213.21666564189297
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 150,
+          "max_release_us": 232,
+          "mean_release_us": 147,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 0,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 1,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.90355481748054,
+          "p99": 235.27355414343117,
+          "max": 246.05155566758992,
+          "mean": 212.97321058126624
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 141,
+          "max_release_us": 213,
+          "mean_release_us": 146,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 1,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 2,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.64455437327786,
+          "p99": 236.66355490503418,
+          "max": 240.47755549771762,
+          "mean": 212.20447553686324
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 149,
+          "max_release_us": 186,
+          "mean_release_us": 146,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 2,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 3,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.329556340287,
+          "p99": 234.68155676608956,
+          "max": 271.23655535332443,
+          "mean": 211.31348550524206
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 143,
+          "max_release_us": 207,
+          "mean_release_us": 147,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 3,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 5,
+        "n": 200,
+        "counts": {
+          "ok": 199,
+          "exception": 0,
+          "timeout": 1,
+          "junk": 0
+        },
+        "ok_pct": 99.5,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 208.62555583233996,
+          "p99": 265.55155499307955,
+          "max": 298.66255544119565,
+          "mean": 211.6468405519198
+        },
+        "pico": {
+          "exchanges": 199,
+          "sense_samples": 199,
+          "last_release_us": 134,
+          "max_release_us": 213,
+          "mean_release_us": 146,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 5,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 10,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 212.06955579044813,
+          "p99": 228.19955528474463,
+          "max": 238.36655644926293,
+          "mean": 212.39818550283314
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 150,
+          "max_release_us": 174,
+          "mean_release_us": 146,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 10,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 20,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.7365552193304,
+          "p99": 231.90355613122745,
+          "max": 234.01455517968213,
+          "mean": 212.46889555994937
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 162,
+          "max_release_us": 210,
+          "mean_release_us": 147,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 20,
+          "sense_connected": true
+        }
+      },
+      {
+        "turnaround_ms": 30,
+        "n": 200,
+        "counts": {
+          "ok": 200,
+          "exception": 0,
+          "timeout": 0,
+          "junk": 0
+        },
+        "ok_pct": 100.0,
+        "junk_bytes_total": 0,
+        "pi_overrun_us": {
+          "p50": 211.86655657301242,
+          "p99": 244.18155634420043,
+          "max": 281.69955520651354,
+          "mean": 212.65983059391954
+        },
+        "pico": {
+          "exchanges": 200,
+          "sense_samples": 200,
+          "last_release_us": 149,
+          "max_release_us": 197,
+          "mean_release_us": 147,
+          "late_releases": 0,
+          "no_fall_seen": 0,
+          "turnaround_ms": 30,
+          "sense_connected": true
+        }
+      }
+    ]
+  }
+}

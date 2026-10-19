@@ -57,8 +57,17 @@ SAMPLE_PERIOD_S = 5.0
 MODBUS_RETRIES = 3
 
 # Tiempo máximo de espera de respuesta por intento.
-# Turnaround de la Pico (10 ms) + procesamiento + margen amplio.
-RESPONSE_TIMEOUT_S = 0.3
+#
+# Debe superar el tiempo que el firmware de la Pico puede pasar sin
+# atender Modbus: su bucle es cooperativo y, mientras lee los sensores
+# (READ_NOW / muestreo periódico), no procesa peticiones. Medido en
+# banco (P4-08): hasta ~820 ms en la primera medida del BME688,
+# ~450 ms en las siguientes.
+#
+# Con 0.3 s la Pi reintentaba peticiones que la Pico sí iba a
+# responder; esas respuestas tardías llegaban durante la transacción
+# siguiente. Ver docs/next_steps.md (NS-05, NS-06).
+RESPONSE_TIMEOUT_S = 1.5
 
 # Pausa antes de reintentar.
 RETRY_DELAY_S = 0.05
@@ -203,6 +212,53 @@ def read_header(uart, function, timeout=RESPONSE_TIMEOUT_S):
     )
 
 
+def check_response_matches_request(function, payload, response):
+    """
+    Comprueba que la respuesta corresponde a ESTA petición.
+
+    Modbus RTU no tiene identificador de transacción: una respuesta
+    tardía a una petición anterior que ya se dio por perdida tiene
+    cabecera, función y CRC válidos, y podría aceptarse como respuesta
+    de la petición actual. Aquí se rechaza lo que se puede detectar:
+
+        FC01   byte count == ceil(cantidad / 8)
+        FC03/  byte count == cantidad * 2
+        FC04
+        FC05   eco exacto de dirección + valor
+
+    LÍMITE: una respuesta tardía de la MISMA función y la MISMA
+    cantidad pero de otra dirección es indistinguible en Modbus RTU.
+    Por eso el timeout debe cubrir el peor tiempo de respuesta real de
+    la Pico, para que las respuestas tardías no ocurran en primer
+    lugar. Requisito de diseño para ATP: ver docs/next_steps.md (NS-06).
+    """
+
+    if function in (1, 3, 4):
+        _, quantity = struct.unpack(">HH", payload)
+
+        expected = (
+            (quantity + 7) // 8
+            if function == 1
+            else quantity * 2
+        )
+
+        if response[2] != expected:
+            raise ModbusTransportError(
+                f"Response does not match request: byte count "
+                f"{response[2]}, expected {expected} "
+                "(likely a late reply to an earlier request)"
+            )
+
+    elif function == 5:
+
+        if response[2:6] != payload:
+            raise ModbusTransportError(
+                "Response does not match request: FC05 echo "
+                f"{response[2:6].hex(' ')}, expected {payload.hex(' ')} "
+                "(likely a late reply to an earlier request)"
+            )
+
+
 class RS485Modbus:
 
     def __init__(self, uart, gpio):
@@ -299,6 +355,8 @@ class RS485Modbus:
 
         if crc16(response) != 0:
             raise ModbusTransportError("Modbus CRC mismatch")
+
+        check_response_matches_request(function, payload, response)
 
         return response
 

@@ -21,7 +21,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
-- The RS-485 environmental test retried requests the Pico was still going to answer (7 retries in 17 transactions): the Pico does not service Modbus while reading sensors (up to ~820 ms), so the 0.3 s response timeout expired. Raised to 1.5 s. Root cause tracked as NS-05; the late-reply ambiguity of Modbus RTU as NS-06 (ATP design input).
+- The RS-485 environmental test lost the first attempt of requests sent right after a response: the Pico keeps its driver enabled ~500 µs after its last byte, so the immediate request collided on the bus. The Pi now waits for at least 5 ms of bus silence since the last reception (`INTER_FRAME_GAP_S`), which also meets the Modbus RTU inter-frame gap.
+- The RS-485 environmental test could retry requests the Pico was still going to answer: the Pico does not service Modbus while reading sensors (up to ~820 ms), which exceeds the old 0.3 s response timeout. Raised to 1.5 s. Most of the 7 retries in 17 transactions first attributed to this were actually inter-frame collisions (see the entry above and the NS-05 correction). The blocking acquisition is tracked as NS-05; the late-reply ambiguity of Modbus RTU as NS-06 (ATP design input).
 - The Pico stopped responding after the first RS-485 exchange: with DE and /RE tied to RTS, its RX line floated during its own transmission and the RP2350 default pull-down injected a junk byte that permanently misaligned the fixed-length frame reader. Fixed with an internal pull-up on GP1 and a frame reader that resynchronizes on Unit ID + function code + CRC.
 - The Pi intermittently lost whole RS-485 responses because `tcdrain()` kept its receiver disabled for several milliseconds after transmitting.
 

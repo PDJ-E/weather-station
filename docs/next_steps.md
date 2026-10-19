@@ -108,6 +108,8 @@ On the bench, an idle bus produced junk bytes on the Pi receiver (e.g. `50 50 81
 
 7 retries in 17 transactions (41%). One retry captured the late reply to the previous request on the wire (`01 01 01 00 51…`, a valid FC01 response arriving during the next FC04 transaction).
 
+**Correction (2026-10-19):** the busy Pico does not explain most of these retries. Most failed first attempts were requests sent right after a response, with no byte received (`junk: none`), and the retry 1.5 s later worked. The Pico holds its RTS high ~500 µs after its last byte (`tx_time_us + 500` in `RS485UART.write()`), and the Pi sent the next request with no gap: the two drivers collided on the bus while the Pico's receiver was disabled. This also broke the Modbus RTU inter-frame silence (1.75 ms above 19200 baud). Fixed on the Pi with `INTER_FRAME_GAP_S = 5 ms`. The blocking acquisition itself is still real (READ_NOW durations above), so this item stays open.
+
 ### Current mitigation
 
 - Pi master timeout raised to 1.5 s, above the slowest measured busy window.

@@ -72,6 +72,21 @@ RESPONSE_TIMEOUT_S = 1.5
 # Pausa antes de reintentar.
 RETRY_DELAY_S = 0.05
 
+# Silencio mínimo en el bus entre el fin de una respuesta y la
+# siguiente petición.
+#
+# La Pico mantiene su RTS (DE + /RE) en HIGH ~500 us después de su
+# último byte (RS485UART.write() espera tx_time_us + 500). Si la Pi
+# transmite enseguida, las dos salidas chocan en el bus y la Pico
+# tiene el receptor deshabilitado: la petición se pierde sin un solo
+# byte de respuesta (junk: none) y solo el reintento tras
+# RESPONSE_TIMEOUT_S funciona. Además, Modbus RTU exige un silencio
+# entre tramas de 1.75 ms a más de 19200 baud.
+#
+# No es una pausa fija: _exchange_once() espera solo lo que falte
+# desde el fin de la última recepción.
+INTER_FRAME_GAP_S = 0.005
+
 
 class ModbusTransportError(Exception):
     """Fallo de transporte: se puede reintentar."""
@@ -268,6 +283,10 @@ class RS485Modbus:
         self.transactions = 0
         self.retries_used = 0
 
+        # time.monotonic() al terminar la última recepción (respuesta
+        # normal, de excepción o intento fallido). None = sin tráfico.
+        self.last_rx_end = None
+
         self.gpio.set_value(
             RTS_GPIO,
             Value.INACTIVE
@@ -320,9 +339,33 @@ class RS485Modbus:
             + struct.pack("<H", crc16(request_data))
         )
 
+        self._wait_inter_frame_gap()
+
         self.uart.reset_input_buffer()
 
         transmit_frame(self.uart, self.gpio, request)
+
+        try:
+            return self._receive_response(function, payload)
+
+        finally:
+            # También en excepción Modbus, timeout o CRC: el siguiente
+            # intento cuenta el silencio desde aquí.
+            self.last_rx_end = time.monotonic()
+
+    def _wait_inter_frame_gap(self):
+
+        if self.last_rx_end is None:
+            return
+
+        remaining = INTER_FRAME_GAP_S - (
+            time.monotonic() - self.last_rx_end
+        )
+
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _receive_response(self, function, payload):
 
         # Read response header, skipping junk bytes from the bus
         header = read_header(self.uart, function)

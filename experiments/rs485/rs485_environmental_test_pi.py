@@ -88,6 +88,51 @@ def read_exact(uart, count, timeout=2.0):
     return bytes(data)
 
 
+def read_header(uart, function, timeout=2.0):
+    """
+    Busca el inicio de la respuesta: Unit ID seguido del function
+    code esperado (o su variante de excepción, function | 0x80).
+
+    Descarta los bytes basura que el bus RS-485 pueda generar antes
+    de la respuesta (bus en reposo sin bias, RO flotando durante la
+    transmisión propia). Un read_exact(2) a ciegas los tomaría como
+    cabecera.
+    """
+
+    valid_functions = (function, function | 0x80)
+    discarded = bytearray()
+    deadline = time.monotonic() + timeout
+
+    previous = None
+
+    while time.monotonic() < deadline:
+        chunk = uart.read(1)
+
+        if not chunk:
+            continue
+
+        current = chunk[0]
+
+        if previous == UNIT_ID and current in valid_functions:
+            if discarded:
+                print(
+                    "    [RS485] junk discarded:",
+                    discarded.hex(" "),
+                )
+
+            return bytes([previous, current])
+
+        if previous is not None:
+            discarded.append(previous)
+
+        previous = current
+
+    raise TimeoutError(
+        "No Modbus response header within "
+        f"{timeout} s (junk: {discarded.hex(' ') or 'none'})"
+    )
+
+
 class RS485Modbus:
 
     def __init__(self, uart, gpio):
@@ -137,11 +182,8 @@ class RS485Modbus:
                 Value.INACTIVE
             )
 
-        # Read response header
-        header = read_exact(self.uart, 2)
-
-        if header[0] != UNIT_ID:
-            raise RuntimeError("Incorrect Modbus Unit ID")
+        # Read response header, skipping junk bytes from the bus
+        header = read_header(self.uart, function)
 
         if header[1] == (function | 0x80):
 

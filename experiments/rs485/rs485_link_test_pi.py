@@ -52,6 +52,48 @@ def crc16(data):
     return crc
 
 
+RESPONSE_TIMEOUT_S = 2.0
+RESPONSE_LENGTH = 7  # FC04, 1 registro: id, fc, count, hi, lo, crc, crc
+
+
+def read_response(uart):
+    """
+    Lee hasta encontrar una respuesta FC04 válida (Unit ID, FC y CRC),
+    descartando bytes basura del bus RS-485 que aparezcan antes.
+
+    Mientras la Pi transmite, /RE está en HIGH y RO queda flotando;
+    y con el bus en reposo sin bias pueden aparecer bytes espurios.
+    Un read(7) a ciegas los tomaría como parte de la respuesta.
+
+    Returns:
+        (response | None, discarded_bytes)
+    """
+
+    buf = bytearray()
+    discarded = bytearray()
+    deadline = time.monotonic() + RESPONSE_TIMEOUT_S
+
+    while time.monotonic() < deadline:
+        chunk = uart.read(uart.in_waiting or 1)
+
+        if chunk:
+            buf.extend(chunk)
+
+        while len(buf) >= RESPONSE_LENGTH:
+            candidate = bytes(buf[:RESPONSE_LENGTH])
+
+            if (
+                candidate[0] == UNIT_ID
+                and candidate[1] == 4
+                and crc16(candidate) == 0
+            ):
+                return candidate, bytes(discarded)
+
+            discarded.append(buf.pop(0))
+
+    return None, bytes(discarded)
+
+
 def find_gpiochip():
     for path in sorted(glob.glob("/dev/gpiochip*")):
         try:
@@ -103,7 +145,7 @@ def main():
             bytesize=8,
             parity="N",
             stopbits=1,
-            timeout=2.0,
+            timeout=0.05,
         ) as uart:
 
             print()
@@ -152,21 +194,21 @@ def main():
             print("[3] Request transmitted")
             print("[4] Waiting for response...")
 
-            response = uart.read(7)
+            response, discarded = read_response(uart)
+
+            if discarded:
+                print(
+                    "    Bytes basura descartados:",
+                    discarded.hex(" "),
+                )
+
+            if response is None:
+                raise RuntimeError(
+                    "No valid Modbus response within "
+                    f"{RESPONSE_TIMEOUT_S} s"
+                )
 
             print("    Response:", response.hex(" "))
-
-            if len(response) != 7:
-                raise RuntimeError(
-                    "Incomplete Modbus response: "
-                    f"received {len(response)} bytes, "
-                    "expected 7"
-                )
-
-            if crc16(response) != 0:
-                raise RuntimeError(
-                    "Modbus CRC validation failed"
-                )
 
             if response[0] != UNIT_ID:
                 raise RuntimeError(

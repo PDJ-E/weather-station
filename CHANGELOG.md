@@ -11,7 +11,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - P4-08 RS-485 bench tests for the SparkFun RS-485 breakouts: a Modbus link test and an environmental (DHT11 + BME688) test for the Pi 5, and the Pico firmware `bme688_modbus_rs485_pico.py` with RTS direction control on GP6.
 - RS-485 turnaround diagnostic (`rs485_turnaround_diag_pi.py` / `rs485_turnaround_diag_pico.py`) that sweeps the Pi direction-control method and the Pico turnaround, with optional hardware timing of the Pi's RTS release through a sense wire.
 - Bounded retries (3) for transport failures in the RS-485 environmental test client; Modbus exception responses are not retried.
-- `docs/next_steps.md`, tracking deferred technical work with its evidence (kernel RS-485 mode on the Pi 5, production retry policy, turnaround soak test, outdoor bus biasing).
+- The RS-485 environmental test client rejects responses that do not match the outstanding request (FC01/FC03/FC04 byte count, FC05 echo), so a late reply to an earlier request is retried instead of accepted.
+- `docs/next_steps.md`, tracking deferred technical work with its evidence (kernel RS-485 mode on the Pi 5, production retry policy, turnaround soak test, outdoor bus biasing, non-blocking acquisition on the Pico, request/response correlation for ATP).
 
 ### Changed
 
@@ -20,6 +21,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- The RS-485 environmental test retried requests the Pico was still going to answer (7 retries in 17 transactions): the Pico does not service Modbus while reading sensors (up to ~820 ms), so the 0.3 s response timeout expired. Raised to 1.5 s. Root cause tracked as NS-05; the late-reply ambiguity of Modbus RTU as NS-06 (ATP design input).
 - The Pico stopped responding after the first RS-485 exchange: with DE and /RE tied to RTS, its RX line floated during its own transmission and the RP2350 default pull-down injected a junk byte that permanently misaligned the fixed-length frame reader. Fixed with an internal pull-up on GP1 and a frame reader that resynchronizes on Unit ID + function code + CRC.
 - The Pi intermittently lost whole RS-485 responses because `tcdrain()` kept its receiver disabled for several milliseconds after transmitting.
 

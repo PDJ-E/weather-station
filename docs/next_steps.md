@@ -86,3 +86,59 @@ Run it under realistic load (PostgreSQL ingestion running) before fixing the tur
 **Status:** Deferred — 2026-10-18
 
 On the bench, an idle bus produced junk bytes on the Pi receiver (e.g. `50 50 81 ff`) whenever no node was driving it: the SparkFun breakouts have no failsafe bias resistors, and the SP3485 failsafe only covers open inputs, not a terminated idle bus. Software now tolerates this (header resync on the Pi, frame resync on the Pico), but the long outdoor cable will need proper biasing (pull-up on A, pull-down on B) sized together with the termination.
+
+---
+
+## NS-05 — Non-blocking sensor acquisition on the Pico
+
+**Phase:** P4 (before multi-node polling)
+**Status:** Deferred — 2026-10-18
+
+### Problem
+
+`bme688_modbus_rs485_pico.py` runs a single cooperative loop: `server.process()` → `process_read_now()` → `update_periodic_sampling()`. While a sensor acquisition runs, the loop does not service Modbus. Requests that arrive in that window wait in the UART buffer and are answered only when the acquisition ends.
+
+### Evidence (P4-08 environmental test, 3 acquisitions)
+
+| Acquisition | READ_NOW duration | Retries with 0.3 s timeout |
+|---|---|---|
+| 1 (first BME688 measurement) | 819 ms | 4 |
+| 2 | 453 ms | 1 |
+| 3 | 454 ms | 2 |
+
+7 retries in 17 transactions (41%). One retry captured the late reply to the previous request on the wire (`01 01 01 00 51…`, a valid FC01 response arriving during the next FC04 transaction).
+
+### Current mitigation
+
+- Pi master timeout raised to 1.5 s, above the slowest measured busy window.
+- Pi master rejects responses whose byte count / FC05 echo does not match the request (NS-06).
+
+### Proposed solution
+
+Split slow acquisitions into "start" and "collect" steps scheduled by the cooperative clock (e.g. trigger the BME688 measurement, keep servicing Modbus, read the result when the heater/conversion time has elapsed), so Modbus latency stays in the millisecond range regardless of sensor timing.
+
+### Trigger to pick it up
+
+Before several nodes share the bus: one node's acquisition must not stall the master's polling cycle, and per-request timeouts of 1.5 s do not scale.
+
+---
+
+## NS-06 — Request/response correlation (design input for ATP)
+
+**Phase:** P8 (ATP protocol)
+**Status:** Design requirement — 2026-10-18
+
+### Problem
+
+Modbus RTU has no transaction identifier. If the master times out and retries, a late reply to the earlier attempt (or to an earlier, different request) can arrive during the new transaction. It has a valid address, function code and CRC, so the master may accept it as the answer to the current request.
+
+`rs485_environmental_test_pi.py` now rejects what Modbus allows it to detect (byte count for FC01/FC03/FC04, exact echo for FC05). A late reply with the **same function and same quantity but a different address** remains indistinguishable — demonstrated in a simulated test.
+
+### Requirement for ATP
+
+Every response must be unambiguously correlated with its request, without relying on timing:
+
+- A sequence / transaction number in each request, echoed in the response (the conceptual frame already has `[seq]`: make the echo mandatory and validated).
+- The master discards any response whose `seq` does not match the outstanding request, even with a valid checksum.
+- Retries reuse the same `seq` only if the operation is idempotent; otherwise a new `seq` plus slave-side duplicate detection.
+- Consider echoing the request's key fields (e.g. message type + target register/object) for defense in depth.

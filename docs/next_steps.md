@@ -55,12 +55,13 @@ Before multi-node polling on the bus (P4 distributed scheduling), or earlier if 
 ## NS-02 — Retry policy for the production RS-485 Modbus master
 
 **Phase:** P4
-**Status:** Partially addressed — 2026-10-18
+**Status:** Mostly addressed — 2026-10-20
 
 The turnaround diagnostic also showed ~0.05% of requests not reaching the Pico as a valid frame, with **either** Pi method and with no RTS collision (`late_releases = 0`). These losses are independent of the turnaround problem, so retries are mandatory regardless of NS-01.
 
 - Done: `rs485_environmental_test_pi.py` retries transport failures up to 3 times (same policy as the P2/P3 PyModbus client, `retries=3`). Modbus exception responses are not retried.
-- Pending: carry the same policy into the production master that replaces the experiment scripts, with retry counters exposed for observability (README principle: a station must explain its own state).
+- Done (2026-10-20): the policy is packaged in `experiments/rs485/rs485_modbus_client.py` with cumulative transport counters (`RS485Stats`), and `p4_rs485_long_run.py` exposes them in its health summary and per sample in the JSONL audit log.
+- Pending: the production master that eventually replaces the experiment scripts must use the same client (or its successor) and keep these counters visible (README principle: a station must explain its own state).
 
 ---
 

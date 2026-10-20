@@ -304,9 +304,13 @@ def create_test_run(
     sample_period_s: float,
     register_map_version: int,
     notes: str | None = None,
+    phase: str = "P3-06",
 ) -> int:
     """
-    Create P3-06 run and return run_id.
+    Create a test run and return run_id.
+
+    phase defaults to "P3-06" so the P3 long run is unchanged. Later
+    phases (e.g. the P4 RS-485 long run) pass their own label.
     """
 
     with conn.cursor() as cur:
@@ -320,7 +324,7 @@ def create_test_run(
                     run_name,
 
                 "phase":
-                    "P3-06",
+                    phase,
 
                 "node_id":
                     NODE_ID,
@@ -432,6 +436,7 @@ def _build_raw_payload(
     sensor_name: str,
     sample: dict[str, Any],
     sensor: dict[str, Any],
+    phase: str = "P3-06",
 ) -> dict[str, Any]:
     """
     Preserve both decoded values and the Modbus/system context.
@@ -443,7 +448,7 @@ def _build_raw_payload(
     return {
 
         "phase":
-            "P3-06",
+            phase,
 
         "sensor":
             sensor_name,
@@ -491,6 +496,7 @@ def insert_environmental_sample(
     *,
     run_id: int,
     sample: dict[str, Any],
+    phase: str = "P3-06",
 ) -> tuple[int, int]:
     """
     Persist one complete acquisition.
@@ -607,6 +613,8 @@ def insert_environmental_sample(
                     sample=sample,
 
                     sensor=dht,
+
+                    phase=phase,
                 )
             ),
     }
@@ -669,6 +677,8 @@ def insert_environmental_sample(
                     sample=sample,
 
                     sensor=bme,
+
+                    phase=phase,
                 )
             ),
     }

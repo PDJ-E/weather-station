@@ -14,6 +14,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The RS-485 environmental test client rejects responses that do not match the outstanding request (FC01/FC03/FC04 byte count, FC05 echo), so a late reply to an earlier request is retried instead of accepted.
 - `docs/next_steps.md`, tracking deferred technical work with its evidence (kernel RS-485 mode on the Pi 5, production retry policy, turnaround soak test, outdoor bus biasing, non-blocking acquisition on the Pico, request/response correlation for ATP).
 
+- `rs485_modbus_client.py`, a reusable Modbus RTU master for the half-duplex RS-485 bus that packages the transport validated in P4-08 (computed RTS release, 5 ms inter-frame silence, junk-tolerant reception, request/response matching, bounded retries, 1.5 s timeout) behind a PyModbus-like API, with cumulative transport counters (`RS485Stats`).
+- `p4_rs485_long_run.py`, the P4 long-duration environmental run over RS-485. It reuses the P3 long run's acquisition, validation, warm-up, JSONL audit and PostgreSQL persistence unchanged, swaps the transport for `rs485_modbus_client`, stores runs with phase `P4`, and adds RS-485 counters to the health summary and per-sample to the JSONL audit log. `p3_06_long_run.py` is left untouched as P3 evidence.
+- `db.create_test_run()` and `db.insert_environmental_sample()` accept an optional `phase` (default `"P3-06"`, so the P3 long run is unchanged).
+
 ### Changed
 
 - The Pi RS-485 scripts release RTS after a computed frame time (busy-wait) instead of `uart.flush()`: measured RTS release went from 4–20 ms to ~150–200 µs (5 ms worst case under load).

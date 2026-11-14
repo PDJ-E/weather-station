@@ -11,6 +11,13 @@ Every write to the Pico (``deploy`` or ``push``) is recorded twice:
 
 ``status`` reads the Pico back and compares it with that record and with
 the current repository.
+
+Everyday use (the Pico's port and current profile are detected):
+
+    python tools/picoctl.py                      install / reinstall the firmware
+    python tools/picoctl.py --profile socket     switch the Pico to another wiring profile
+    python tools/picoctl.py push FILE --as main.py
+    python tools/picoctl.py status
 """
 from __future__ import annotations
 
@@ -176,18 +183,41 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def require_port(port: str | None) -> str:
-    """Device commands need one explicit port.
+def find_pico_ports() -> list[str]:
+    """Serial ports of attached Raspberry Pi USB devices (Pico / Pico 2)."""
+    try:
+        from serial.tools import list_ports
+    except ImportError as exc:
+        raise ProvisionError("pyserial unavailable; install requirements.txt") from exc
+    return sorted(
+        (p.device for p in list_ports.comports() if getattr(p, "vid", None) == RASPBERRY_PI_USB_VID),
+        key=str.upper,
+    )
 
-    `auto` is refused: each mpremote call resolves it on its own, so with
-    two boards attached a backup and a deploy could hit different devices.
+
+def resolve_port(port: str | None, interactive: bool = False) -> str:
+    """Find the Pico's port once and use that same port for every call.
+
+    mpremote's own `auto` is never passed on: it is re-resolved on each
+    call, so with two boards a backup and a deploy could hit different
+    devices. Here the port is detected once, from the Raspberry Pi USB ID.
     """
-    if not port or port.strip().lower() == "auto":
+    if port and port.strip().lower() != "auto":
+        return port
+    picos = find_pico_ports()
+    if len(picos) == 1:
+        print(f"Pico detected on {picos[0]}")
+        return picos[0]
+    if interactive and sys.stdin.isatty():
+        return interactive_port()
+    if not picos:
         raise ProvisionError(
-            "Give the Pico's port explicitly, e.g. --port COM12 "
-            "(list ports with: python -m mpremote connect list)"
+            "No Pico found on USB. Plug it in and close Thonny or any serial monitor, "
+            "or give the port with --port COMx."
         )
-    return port
+    raise ProvisionError(
+        f"Several Picos are connected ({', '.join(picos)}); choose one with --port COMx."
+    )
 
 
 def mpremote(port: str, *args: str, timeout: int = 35) -> str:
@@ -382,10 +412,7 @@ def device_inventory(port: str) -> list[tuple[str, int]]:
     files = device_files(port)
     # Fail closed: an empty listing is only accepted by an explicit decision.
     if not files:
-        raise EmptyDeviceError(
-            "The Pico filesystem is empty: there is nothing to back up. "
-            "If this is a new Pico, rerun with --skip-backup (or answer 'y' in the installer)."
-        )
+        raise EmptyDeviceError("The Pico filesystem is empty: there is nothing to back up.")
     return files
 
 
@@ -671,12 +698,12 @@ def deploy(args: argparse.Namespace) -> None:
     print("  micropython-modbus (SHA256-pinned) -> /lib/umodbus/")
     print(f"  deployment record -> /{MANIFEST_NAME} and {LOG_FILE.relative_to(REPO).as_posix()}")
     if not args.apply:
-        print("DRY RUN: add --apply --port COMx to deploy.")
+        print("DRY RUN: add --apply to deploy.")
         return
 
-    port = require_port(args.port)
+    bootstrap_mpremote()
+    port = resolve_port(args.port)
     cache_uf2_best_effort(args.offline)
-    ensure_mpremote()
     doctor(port)
 
     backup_path = None
@@ -693,10 +720,9 @@ def deploy(args: argparse.Namespace) -> None:
             inventory = json.loads((dest / "inventory.json").read_text(encoding="utf-8"))
             previous_files = [(item["path"], item["size"]) for item in inventory["device_files"]]
         except EmptyDeviceError:
-            confirm = getattr(args, "confirm_empty", None)
-            if confirm is None or not confirm():
-                raise
-            print("Empty Pico confirmed: continuing without a backup.")
+            # The listing itself succeeded ("ls :" heading seen), so this is
+            # a genuinely empty board, not a failed read: nothing to lose.
+            print("The Pico has no files (new board): nothing to back up.")
 
     archive = acquire_modbus(args.offline, args.archive)
     records: dict[str, dict] = {}
@@ -805,12 +831,12 @@ def push(args: argparse.Namespace) -> None:
     print(describe_git(git_info))
     for source, name in targets:
         print(f"  {repo_relative(source) or source} -> /{name}")
-    if not args.apply:
-        print("DRY RUN: add --apply --port COMx to copy.")
+    if args.dry_run:
+        print("DRY RUN: nothing was copied.")
         return
 
-    port = require_port(args.port)
-    ensure_mpremote()
+    bootstrap_mpremote()
+    port = resolve_port(args.port, interactive=True)
     doctor(port)
     manifest = read_manifest(port)
 
@@ -862,8 +888,8 @@ def push(args: argparse.Namespace) -> None:
 
 def status(args: argparse.Namespace) -> int:
     """Compare the Pico with its deployment record and with the repository."""
-    port = require_port(args.port)
-    ensure_mpremote()
+    bootstrap_mpremote()
+    port = resolve_port(args.port, interactive=True)
     manifest = read_manifest(port)
     on_device = [name for name, _ in device_files(port)]
 
@@ -986,31 +1012,93 @@ def ask_yes(question: str) -> bool:
     return input(f"{question} [y/N]: ").strip().lower() in ("y", "yes", "s", "si", "sí")
 
 
-def interactive_install() -> int:
-    """Full setup in one command: python tools/picoctl.py."""
+def detect_profile(port: str) -> tuple[str | None, str]:
+    """Which profile is on this Pico now, so a reinstall needs no answer.
+
+    1. The deployment record (/ws_deploy.json), unless it was a --main override.
+    2. Otherwise, the SHA-256 of /main.py against each profile's main.py.
+    """
+    manifest = read_manifest(port)
+    if manifest and manifest.get("profile") in PROFILES and not manifest.get("main_override"):
+        return manifest["profile"], "from the deployment record on the Pico"
+    if "main.py" in [name for name, _ in device_files(port)]:
+        on_pico = device_sha256(port, ["main.py"])["main.py"]
+        for name in PROFILES:
+            if file_sha(profile_main(name)) == on_pico:
+                return name, f"/main.py on the Pico is the '{name}' firmware"
+        return None, "/main.py on the Pico does not match any profile"
+    return None, "the Pico has no main.py"
+
+
+def interactive_install(
+    port: str | None = None,
+    profile: str | None = None,
+    reset: bool = False,
+    dry_run: bool = False,
+    assume_yes: bool = False,
+) -> int:
+    """Full setup in one command: python tools/picoctl.py
+
+    With one Pico attached that was installed before, it asks nothing:
+    port and profile are detected. It only asks when it cannot know
+    (several Picos, or a Pico whose firmware it does not recognize), and
+    before switching a Pico to a different wiring profile.
+    """
     print("=" * 55)
     print("  Weather Station | Pico 2 — One-command installer")
     print("=" * 55)
     bootstrap_mpremote()
-    port = interactive_port()
-    profile = interactive_profile()
-    print(f"\nInstalling to {port} using the '{profile}' profile.")
-    print("The installed MicroPython UF2 will NOT be flashed or erased.")
-    args = parser().parse_args(["deploy", "--port", port, "--profile", profile, "--apply"])
-    args.confirm_empty = lambda: ask_yes(
-        "The Pico has no files, so there is nothing to back up. Is this a new Pico? Continue"
-    )
-    deploy(args)
+    port = resolve_port(port, interactive=True)
+    detected, reason = detect_profile(port)
+
+    if profile is None:
+        if detected:
+            profile = detected
+            print(f"Profile: {profile} ({reason})")
+        elif sys.stdin.isatty():
+            print(f"Profile not detected: {reason}.")
+            profile = interactive_profile()
+        else:
+            raise ProvisionError(f"Profile not detected ({reason}); give it with --profile.")
+    elif detected and detected != profile:
+        print(f"WARNING: the Pico has the '{detected}' firmware and you asked for '{profile}'.")
+        print(f"  {profile}: {PROFILES[profile]['summary']}")
+        print("  Install it only if the Pico is already wired for it; otherwise RS-485 stops answering.")
+        if not assume_yes and not (sys.stdin.isatty() and ask_yes("Is the Pico wired for it?")):
+            raise ProvisionError("Profile change not confirmed; nothing was written.")
+
+    argv = ["deploy", "--port", port, "--profile", profile]
+    if not dry_run:
+        argv.append("--apply")
+    if reset:
+        argv.append("--reset")
+    deploy(parser().parse_args(argv))
+    if dry_run:
+        return 0
     print("\nSUCCESS — Pico application and umodbus are installed and verified.")
     print("UF2 archive retained on your PC. No weather-core setup is necessary.")
-    print("Reset/power-cycle only when the sensors and RS-485 wiring are ready.")
+    if not reset:
+        print("Reset/power-cycle only when the sensors and RS-485 wiring are ready.")
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Pico 2 provisioning for Weather Station")
-    sub = p.add_subparsers(dest="command", required=True)
-    port_help = "USB serial port of the Pico, e.g. COM12 or /dev/ttyACM0 (required; 'auto' is refused)"
+    p = argparse.ArgumentParser(
+        description="Pico 2 provisioning for Weather Station. Without a command it installs "
+                    "the firmware, detecting the Pico's port and its current profile.",
+    )
+    # Distinct dests: argparse lets subcommand defaults overwrite top-level values.
+    p.add_argument("--port", dest="install_port", metavar="COMx", help="Pico port, only if it cannot be detected")
+    p.add_argument("--profile", dest="install_profile", choices=tuple(PROFILES), metavar="PROFILE",
+                   help="Install this profile instead of the one detected on the Pico")
+    p.add_argument("--reset", dest="install_reset", action="store_true",
+                   help="Start main.py after installing")
+    p.add_argument("--dry-run", dest="install_dry_run", action="store_true",
+                   help="Show the plan without writing")
+    p.add_argument("--yes", dest="install_yes", action="store_true",
+                   help="Do not ask before changing the profile (non-interactive use)")
+    sub = p.add_subparsers(dest="command")
+    port_help = "USB serial port of the Pico, e.g. COM12; detected automatically when omitted"
 
     s = sub.add_parser("doctor", help="Check the Pico model and drivers")
     s.add_argument("--port", help=port_help)
@@ -1040,7 +1128,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--port", help=port_help)
     s.add_argument("--as", dest="as_name", help="Name on the Pico for a single file, e.g. main.py")
     s.add_argument("--note", help="Short reason stored in the record, e.g. 'P4 long run test'")
-    s.add_argument("--apply", action="store_true", help="Actually write to the Pico")
+    s.add_argument("--dry-run", action="store_true", help="Show what would be copied, write nothing")
     s.add_argument("--reset", action="store_true", help="Reset the Pico afterwards")
 
     s = sub.add_parser("status", help="Compare the Pico with its deployment record and the repo")
@@ -1052,17 +1140,21 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     try:
-        if not argv:
-            return interactive_install()
         args = parser().parse_args(argv)
+        if args.command is None:
+            return interactive_install(
+                port=args.install_port, profile=args.install_profile,
+                reset=args.install_reset, dry_run=args.install_dry_run,
+                assume_yes=args.install_yes,
+            )
         if args.command == "doctor":
-            ensure_mpremote()
-            doctor(require_port(args.port))
+            bootstrap_mpremote()
+            doctor(resolve_port(args.port, interactive=True))
         elif args.command == "firmware":
             download_firmware(args.offline)
         elif args.command == "backup":
-            port = require_port(args.port)
-            ensure_mpremote()
+            bootstrap_mpremote()
+            port = resolve_port(args.port, interactive=True)
             path = args.destination or default_backup_path()
             if path.exists():
                 raise ProvisionError(f"Backup directory exists: {path}")

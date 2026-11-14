@@ -21,7 +21,7 @@ firmware/pico/
 
 ## Profiles and pin maps
 
-The profile decides which `main.py` is installed, and each `main.py` assumes a specific wiring. Installing firmware for the wrong wiring stops the RS-485 link from answering, so `picoctl` always asks for the profile.
+The profile decides which `main.py` is installed, and each `main.py` assumes a specific wiring. Installing firmware for the wrong wiring stops the RS-485 link from answering. `picoctl` therefore keeps the profile already on the Pico, and asks for confirmation before switching to another one (`--profile`).
 
 | Signal | `socket` (`main.py`) | `bench` (`profiles/bench/main.py`) |
 |---|---|---|

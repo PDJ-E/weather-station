@@ -244,7 +244,7 @@ A replacement Pico 2 can be provisioned from the repository root with one comman
 python tools/picoctl.py
 ```
 
-The interactive installer lists serial ports, asks which wiring profile the Pico is connected to (`socket`, `bench` or `uart`, with no default), backs up its filesystem, installs pinned `micropython-modbus` and the application modules, and verifies transferred files and imports. It keeps a verified copy of the known-good Pimoroni MicroPython UF2 **on the host PC**; it never flashes it.
+The installer detects the Pico's port and the profile already installed on it (`socket`, `bench` or `uart`), so a reinstall asks nothing; `--profile` switches to another wiring. It backs up the Pico's filesystem, installs pinned `micropython-modbus` and the application modules, and verifies transferred files and imports. It keeps a verified copy of the known-good Pimoroni MicroPython UF2 **on the host PC**; it never flashes it.
 
 Every deployment is recorded on the Pico (`/ws_deploy.json`: profile, Git commit and the SHA-256 of every file) and in a log on the PC. `picoctl push` copies individual experiment scripts with the same backup, read-back and record, and `picoctl status` shows whether the Pico still matches its record and the repository.
 
@@ -272,7 +272,7 @@ For the active technical debt and its test evidence, see [`docs/next_steps.md`](
 | **P2 — Modbus RTU contract** | Complete | Frozen v1.0 register map and 19/19 integration tests |
 | **P3 — BME688 environmental acquisition** | Complete | v1.1 (`0x0101`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
 | **P4 — RS-485 communication** | Bench-validated; socket firmware not yet validated | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
-| **Pico 2 provisioning** | Complete; traceability extension pending hardware run | One-command installer, pinned UF2/dependencies/`mpremote`, hardware-proven backup and upload; wiring profiles, on-device deployment record, `push` and `status` tested against a simulated Pico (39 automated tests) |
+| **Pico 2 provisioning** | Complete; traceability extension pending hardware run | One-command installer, pinned UF2/dependencies/`mpremote`, hardware-proven backup and upload; wiring profiles, on-device deployment record, `push` and `status` tested against a simulated Pico (42 automated tests) |
 | **Outdoor mechanical fabrication** | In progress | Outdoor-box print set (Pico 2 socket v4, board holders, PWR-DIST spacers) published as STL on 2026-11-09; level-2 deck, instrument hardware, editable CAD source and assembly qualification remain open |
 | **Outdoor wiring and protection** | Not field-qualified | Power distribution, bus bias/termination, weatherproofing and environmental exposure validation still needed |
 | **Production backend / dashboard** | Planned | Experimental storage is working; unattended production services and user interface are separate work |

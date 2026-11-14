@@ -233,20 +233,48 @@ class PicoctlTests(unittest.TestCase):
             with self.assertRaises(picoctl.ProvisionError):
                 picoctl.doctor("COM12")
 
-    def test_one_command_wizard_selects_port_and_applies(self):
+    def test_one_command_install_asks_nothing_when_port_and_profile_are_detected(self):
         with mock.patch.object(picoctl, "bootstrap_mpremote"), mock.patch.object(
-            picoctl, "interactive_port", return_value="COM12"
+            picoctl, "resolve_port", return_value="COM12"
         ), mock.patch.object(
-            picoctl, "interactive_profile", return_value="bench"
-        ), mock.patch.object(picoctl, "deploy") as deployed:
-            self.assertEqual(picoctl.interactive_install(), 0)
+            picoctl, "detect_profile", return_value=("bench", "record")
+        ), mock.patch.object(picoctl, "deploy") as deployed, mock.patch(
+            "builtins.input", side_effect=AssertionError("must not ask")
+        ), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(picoctl.main([]), 0)
         args = deployed.call_args.args[0]
         self.assertEqual(args.port, "COM12")
         self.assertEqual(args.profile, "bench")
-        self.assertTrue(callable(args.confirm_empty))
         self.assertTrue(args.apply)
         self.assertFalse(args.skip_backup)
         self.assertFalse(args.reset)
+
+    def test_profile_change_needs_confirmation(self):
+        common = [mock.patch.object(picoctl, "bootstrap_mpremote"),
+                  mock.patch.object(picoctl, "resolve_port", return_value="COM12"),
+                  mock.patch.object(picoctl, "detect_profile", return_value=("bench", "record"))]
+        for patch in common:
+            patch.start()
+        try:
+            with mock.patch.object(picoctl, "deploy") as deployed, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(picoctl.main(["--profile", "socket"]), 2)  # not a tty, no --yes
+                deployed.assert_not_called()
+                self.assertEqual(picoctl.main(["--profile", "socket", "--yes"]), 0)
+                self.assertEqual(deployed.call_args.args[0].profile, "socket")
+        finally:
+            for patch in reversed(common):
+                patch.stop()
+
+    def test_undetected_profile_without_terminal_is_an_error(self):
+        with mock.patch.object(picoctl, "bootstrap_mpremote"), mock.patch.object(
+            picoctl, "resolve_port", return_value="COM12"
+        ), mock.patch.object(
+            picoctl, "detect_profile", return_value=(None, "no main.py")
+        ), mock.patch.object(picoctl, "deploy") as deployed, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(picoctl.main([]), 2)
+            deployed.assert_not_called()
 
     def test_select_listed_serial_port(self):
         serial_port = type("Port", (), {"device": "COM12", "description": "Pico 2"})
@@ -391,13 +419,11 @@ class TraceabilityTests(unittest.TestCase):
             patch.stop()
         self.tmp.cleanup()
 
-    def deploy(self, fake, *extra, confirm=None):
+    def deploy(self, fake, *extra, profile="socket"):
         args = picoctl.parser().parse_args(
-            ["deploy", "--port", "COM12", "--profile", "socket", "--apply",
+            ["deploy", "--port", "COM12", "--profile", profile, "--apply",
              "--archive", str(self.archive), *extra]
         )
-        if confirm is not None:
-            args.confirm_empty = confirm
         with mock.patch.object(picoctl, "mpremote", side_effect=fake), \
                 contextlib.redirect_stdout(io.StringIO()):
             picoctl.deploy(args)
@@ -409,11 +435,22 @@ class TraceabilityTests(unittest.TestCase):
             code = picoctl.status(args)
         return code, out.getvalue()
 
-    def test_auto_port_is_refused_for_device_writes(self):
-        for port in (None, "auto", "AUTO"):
-            with self.assertRaises(picoctl.ProvisionError):
-                picoctl.require_port(port)
-        self.assertEqual(picoctl.require_port("COM12"), "COM12")
+    def test_port_is_detected_once_from_raspberry_pi_usb_id(self):
+        pico = type("Port", (), {"device": "COM12", "description": "Board", "vid": 0x2E8A})
+        pico2 = type("Port", (), {"device": "COM14", "description": "Board", "vid": 0x2E8A})
+        other = type("Port", (), {"device": "COM3", "description": "USB serial", "vid": 0x0403})
+        out = contextlib.redirect_stdout(io.StringIO())
+        with out:
+            self.assertEqual(picoctl.resolve_port("COM7"), "COM7")
+            with mock.patch("serial.tools.list_ports.comports", return_value=[other, pico]):
+                self.assertEqual(picoctl.resolve_port(None), "COM12")
+                self.assertEqual(picoctl.resolve_port("auto"), "COM12")
+            with mock.patch("serial.tools.list_ports.comports", return_value=[other]):
+                with self.assertRaises(picoctl.ProvisionError):
+                    picoctl.resolve_port(None)
+            with mock.patch("serial.tools.list_ports.comports", return_value=[pico, pico2]):
+                with self.assertRaises(picoctl.ProvisionError):
+                    picoctl.resolve_port(None)
 
     def test_profile_is_required(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -425,12 +462,23 @@ class TraceabilityTests(unittest.TestCase):
         self.assertEqual(mains["bench"], self.pico_dir / "profiles" / "bench" / "main.py")
         self.assertEqual(len(set(mains.values())), 3)
 
-    def test_empty_pico_needs_explicit_confirmation(self):
-        with self.assertRaises(picoctl.EmptyDeviceError):
-            self.deploy(FakePico())
-        self.deploy(FakePico(), confirm=lambda: True)
-        with self.assertRaises(picoctl.EmptyDeviceError):
-            self.deploy(FakePico(), confirm=lambda: False)
+    def test_empty_pico_installs_without_backup(self):
+        fake = FakePico()
+        self.deploy(fake)
+        self.assertIn("main.py", fake.files)
+        self.assertFalse((self.root / ".pico-backups").exists())
+
+    def test_profile_detected_from_record_then_from_main_hash(self):
+        fake = FakePico({"boot.py": b"# old"})
+        self.deploy(fake, profile="bench")
+        with mock.patch.object(picoctl, "mpremote", side_effect=fake):
+            self.assertEqual(picoctl.detect_profile("COM12")[0], "bench")
+            del fake.files[picoctl.MANIFEST_NAME]
+            self.assertEqual(picoctl.detect_profile("COM12")[0], "bench")
+            fake.files["main.py"] = b"# something else"
+            self.assertIsNone(picoctl.detect_profile("COM12")[0])
+            del fake.files["main.py"]
+            self.assertIsNone(picoctl.detect_profile("COM12")[0])
 
     def test_deploy_writes_manifest_last_and_status_is_in_sync(self):
         fake = FakePico({"boot.py": b"# old"})
@@ -476,7 +524,7 @@ class TraceabilityTests(unittest.TestCase):
         script.parent.mkdir()
         script.write_text("# probe\n", encoding="utf-8")
         args = picoctl.parser().parse_args(
-            ["push", str(script), "--as", "main.py", "--port", "COM12", "--apply", "--note", "probe"]
+            ["push", str(script), "--as", "main.py", "--port", "COM12", "--note", "probe"]
         )
         with mock.patch.object(picoctl, "mpremote", side_effect=fake), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -493,7 +541,7 @@ class TraceabilityTests(unittest.TestCase):
     def test_push_dry_run_does_not_touch_device(self):
         script = self.root / "x.py"
         script.write_text("# x\n", encoding="utf-8")
-        args = picoctl.parser().parse_args(["push", str(script)])
+        args = picoctl.parser().parse_args(["push", str(script), "--dry-run"])
         with mock.patch.object(picoctl, "mpremote", side_effect=AssertionError), \
                 contextlib.redirect_stdout(io.StringIO()):
             picoctl.push(args)

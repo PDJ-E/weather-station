@@ -15,9 +15,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `experiments/rs485/p4_socket_environmental_test_pi.py`, the Pi-side RS-485 test for the socket firmware (expects map `0x0102` and a `NOT_INSTALLED` DHT11). `rs485_environmental_test_pi.py` is left unchanged.
 - `firmware/pico/profiles/bench/main.py`: the validated P4-08 bench firmware, unchanged, as profile `bench`.
 - `picoctl` deployment record: `/ws_deploy.json` on the Pico (profile, Git commit, uncommitted files, SHA-256 and source of every file, later pushes) and `.pico-deployments/log.jsonl` on the PC.
-- `picoctl push`: copies individual files (for example experiment scripts, optionally `--as main.py`) with a backup of overwritten files, SHA-256 read-back and a note in the record.
+- `picoctl push`: copies individual files (for example experiment scripts, optionally `--as main.py`) with a backup of overwritten files, SHA-256 read-back and a note in the record. It writes directly; `--dry-run` previews.
 - `picoctl status`: reads the Pico back (on-device SHA-256) and reports files changed by hand, missing or unmanaged, and repository files that differ from what was deployed.
-- Host tests for profiles, empty-Pico handling, pinned `mpremote`, and the deploy → status → push sequence against a simulated Pico filesystem (39 tests). CI also compiles every firmware file with `mpy-cross`.
+- Host tests for profiles, empty-Pico handling, pinned `mpremote`, and the deploy → status → push sequence against a simulated Pico filesystem (42 tests). CI also compiles every firmware file with `mpy-cross`.
 
 - P4-08 RS-485 bench tests for the SparkFun RS-485 breakouts: a Modbus link test and an environmental (DHT11 + BME688) test for the Pi 5, and the Pico firmware `bme688_modbus_rs485_pico.py` with RTS direction control on GP6.
 - RS-485 turnaround diagnostic (`rs485_turnaround_diag_pi.py` / `rs485_turnaround_diag_pico.py`) that sweeps the Pi direction-control method and the Pico turnaround, with optional hardware timing of the Pi's RTS release through a sense wire.
@@ -32,10 +32,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - README: new "Outdoor electronics box" and "CAD and manufacturing files" sections; repository structure and status updated for the first STL release.
-- `picoctl deploy` requires `--profile` (`socket`, `bench`, `uart`); the interactive installer asks for it with no default. The former `rs485` profile is now `bench`.
-- `picoctl` refuses `--port auto` and a missing port for any command that talks to the Pico.
-- The interactive installer marks Raspberry Pi USB devices and only offers a default port when exactly one is attached.
-- An empty Pico no longer blocks the interactive installer: it asks for confirmation before continuing without a backup (`--skip-backup` on the command line).
+- `python tools/picoctl.py` needs no input in the normal case: it detects the Pico's port (Raspberry Pi USB ID, resolved once) and the profile already on the Pico (deployment record, or SHA-256 of its `main.py`). `--profile` switches profile, with one confirmation. `picoctl deploy` requires `--profile` (`socket`, `bench`, `uart`). The former `rs485` profile is now `bench`.
+- `mpremote`'s own `auto` port is never passed on; every command uses one port detected at the start, and asks only when several Picos are attached.
+- An empty Pico (new board) no longer blocks the installer: there is nothing to back up, so it continues.
 - `mpremote` is pinned to `1.29.0` (in `requirements.txt` and checked by `picoctl`), because its output is parsed.
 - Caching the UF2 recovery copy is best-effort during `deploy`: a network failure only warns.
 - The post-install import check also imports `dht11_sensor` and `bme688_modbus_extension`.

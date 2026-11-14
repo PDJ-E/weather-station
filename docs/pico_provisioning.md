@@ -20,8 +20,9 @@ Every write to the Pico (`deploy` or `push`) leaves two records:
 - Python 3.10+ on the PC, run from the repository root.
 - `mpremote==1.29.0` and `pyserial==3.5` (both in `requirements.txt`). The version of `mpremote` is pinned because `picoctl` parses its output. The interactive installer installs it if it is missing or has a different version.
 - Close Thonny and any serial monitor before running `picoctl`: only one program can hold the Pico's port.
+- The port is detected once, from the Raspberry Pi USB ID, and that same port is used for every step. `mpremote`'s own `auto` is never used, because it is resolved again on every call and could switch boards between the backup and the install.
 
-## 1. New or replacement Pico: one command
+## 1. Everyday use: one command
 
 Plug the Pico 2 into USB and run:
 
@@ -29,68 +30,73 @@ Plug the Pico 2 into USB and run:
 python tools/picoctl.py
 ```
 
-The installer:
+In the normal case it **asks nothing**:
 
-1. Installs the pinned `mpremote` if needed.
-2. Lists serial ports and marks Raspberry Pi devices. If exactly one is found, Enter selects it; otherwise you choose.
-3. Asks for the **profile** (there is no default): `socket`, `bench` or `uart`. Choose the one that matches how the Pico is wired.
-4. Caches the pinned Pimoroni UF2 on the PC as a recovery copy. If that fails (no network), it only warns: the UF2 is never flashed.
-5. Checks the board is an RP2350 with the Pimoroni BME68X drivers.
-6. Backs up every file on the Pico to `.pico-backups/<UTC timestamp>/`, checking sizes. **If the Pico is empty** (a new board), it asks for confirmation before continuing without a backup.
-7. Installs the SHA-256-pinned `micropython-modbus==2.3.7` to `/lib/umodbus/`.
-8. Copies the modules, then `main.py` **last**, reading each one back and checking SHA-256.
-9. Runs an on-board import test of Modbus, the Pimoroni drivers and all application modules.
-10. Writes `/ws_deploy.json` and the PC log line, and lists files on the Pico it does not manage (they are left untouched).
+- **Port:** detected from the Raspberry Pi USB ID. It only asks if several Picos are connected, and fails with a clear message if none is found (unplugged, or held by Thonny).
+- **Profile:** the one already on the Pico, read from `/ws_deploy.json` or, for a Pico installed before records existed, recognized by the SHA-256 of its `main.py`. It only asks for a Pico whose firmware it does not recognize.
+- **Empty Pico (new board):** there is nothing to back up, so it continues without asking.
 
-It does **not** reset the Pico. Reset or power-cycle it once the sensors and RS-485 wiring are connected.
+Then it:
 
-## 2. The same steps as separate commands
+1. Installs the pinned `mpremote` if it is missing or has another version.
+2. Caches the pinned Pimoroni UF2 on the PC as a recovery copy. If that fails (no network), it only warns: the UF2 is never flashed.
+3. Checks the board is an RP2350 with the Pimoroni BME68X drivers.
+4. Backs up every file on the Pico to `.pico-backups/<UTC timestamp>/`, checking sizes.
+5. Installs the SHA-256-pinned `micropython-modbus==2.3.7` to `/lib/umodbus/`.
+6. Copies the modules, then `main.py` **last**, reading each one back and checking SHA-256.
+7. Runs an on-board import test of Modbus, the Pimoroni drivers and all application modules.
+8. Writes `/ws_deploy.json` and the PC log line, and lists files on the Pico it does not manage (they are left untouched).
 
-```powershell
-# See the plan; nothing is contacted or written.
-python tools/picoctl.py deploy --profile socket
+It does **not** reset the Pico unless you add `--reset`.
 
-# Back up, install, verify and record.
-python tools/picoctl.py deploy --profile socket --port COM12 --apply
-```
-
-- `--port` is required for every command that talks to the Pico. `auto` is refused: each `mpremote` call would resolve it separately, so with two boards attached the backup and the install could go to different devices. List ports with `python -m mpremote connect list`.
-- `--skip-backup` is only for a Pico known to be empty.
-- `--include-tests` also copies `common_interface_test.py`.
-- `--main PATH` installs a specific `main.py` instead of the profile's; the record marks it as an override.
-- `--offline` uses only the cached UF2 and `micropython-modbus` archive. `--archive PATH` supplies the archive.
-- `--reset` starts `main.py` after deploying.
-- If any deployed file has uncommitted changes, the deploy still runs but warns, and the record lists those files. The commit alone then does not reproduce the deployment; the recorded SHA-256 values do.
-
-Other commands:
+### Switching the wiring profile
 
 ```powershell
-python tools/picoctl.py doctor --port COM12   # board model and drivers
-python tools/picoctl.py backup --port COM12   # full backup to .pico-backups/
-python tools/picoctl.py firmware              # cache/verify the UF2 on the PC only
-python tools/picoctl.py status --port COM12   # compare the Pico with its record and the repo
+python tools/picoctl.py --profile socket
 ```
 
-`status` exits with `0` when the Pico matches its record and `1` when it does not (or has no record).
+When the requested profile differs from the one on the Pico, it warns and asks **once** whether the Pico is already wired for it. In a non-interactive run, add `--yes`. After the switch, plain `python tools/picoctl.py` keeps using the new profile.
 
-## 3. Experiments: `push` instead of copying by hand
+Other top-level options: `--port COMx` (only if detection cannot work), `--dry-run` (show the plan, write nothing), `--reset`.
 
-For bench work (a diagnostic script, a modified `main.py` from `experiments/`), use `push`. It replaces manual copying with the same guarantees as a deploy:
+## 2. Experiments: `push` instead of copying by hand
+
+For bench work (a diagnostic script, a modified `main.py` from `experiments/`):
 
 ```powershell
-# Plan only.
-python tools/picoctl.py push experiments/rs485/rs485_turnaround_diag_pico.py --as main.py
-
-# Copy, verify and record, with a reason.
-python tools/picoctl.py push experiments/rs485/rs485_turnaround_diag_pico.py --as main.py `
-    --port COM12 --apply --note "turnaround diagnostic"
+python tools/picoctl.py push experiments/rs485/rs485_turnaround_diag_pico.py --as main.py --note "turnaround diagnostic"
 ```
 
-- Files go to the Pico root. `--as` renames a single file (usually to `main.py`).
+- Files go to the Pico root. `--as` renames a single file (usually to `main.py`). `--note` is optional.
 - Any Pico file about to be overwritten is first backed up to `.pico-backups/<timestamp>-push/`.
 - A new `main.py` is copied after the other files of the same push.
-- The push is appended to `/ws_deploy.json` (which file came from which repository path and commit, plus the note) and to the PC log. `status` then shows it.
-- To return to a profile, run `deploy` again.
+- The push is appended to `/ws_deploy.json` (which file came from which repository path and commit, plus the note) and to the PC log.
+- `--dry-run` shows what would be copied. To return to the profile's firmware, run `python tools/picoctl.py` again.
+
+## 3. Checking and advanced commands
+
+```powershell
+python tools/picoctl.py status     # is the Pico still what was recorded? does the repo still match?
+python tools/picoctl.py doctor     # board model and drivers
+python tools/picoctl.py backup     # full backup to .pico-backups/
+python tools/picoctl.py firmware   # cache/verify the UF2 on the PC only
+```
+
+`status` exits with `0` when the Pico matches its record and `1` when it does not (or has no record). It catches files edited by hand (for example from Thonny) and repository changes not yet installed.
+
+All of them detect the port like the installer; `--port COMx` overrides it.
+
+`deploy` is the scriptable form of the installer, with every option explicit. It is a dry run unless `--apply` is given:
+
+```powershell
+python tools/picoctl.py deploy --profile socket --apply
+```
+
+- `--skip-backup`, `--backup-dir PATH`.
+- `--include-tests` also copies `common_interface_test.py`.
+- `--main PATH` installs a specific `main.py` instead of the profile's; the record marks it as an override, and the installer then asks for the profile next time.
+- `--offline` uses only the cached UF2 and `micropython-modbus` archive; `--archive PATH` supplies the archive.
+- If any deployed file has uncommitted changes, the install still runs but warns, and the record lists those files.
 
 ## 4. Check the RS-485 link from `weather-core`
 

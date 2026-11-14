@@ -45,7 +45,7 @@ class PicoctlTests(unittest.TestCase):
 
     def test_dependency_lock_rejects_inconsistent_version(self):
         lock = json.loads(picoctl.LOCK_FILE.read_text(encoding="utf-8"))
-        lock["modbus"]["version"] = "2.3.8"
+        lock["modbus"]["version"] = "99.99.99"
         with tempfile.TemporaryDirectory() as td:
             candidate = Path(td) / "bad.lock.json"
             candidate.write_text(json.dumps(lock), encoding="utf-8")
@@ -61,14 +61,14 @@ class PicoctlTests(unittest.TestCase):
             with self.assertRaises(picoctl.ProvisionError):
                 picoctl.load_dependency_lock(candidate)
 
-    def test_firmware_is_pinned_to_original_pimoroni_build(self):
-        self.assertEqual(picoctl.FIRMWARE_NAME, "rpi_pico2-v1.29.0-micropython.uf2")
-        self.assertIn("pimoroni-pico-rp2350", picoctl.FIRMWARE_URL)
-        self.assertEqual(picoctl.FIRMWARE_SIZE, 1_833_472)
-        self.assertEqual(
-            picoctl.FIRMWARE_SHA256,
-            "2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3",
-        )
+    def test_firmware_pin_is_defined_by_lock_not_duplicated(self):
+        locked = picoctl.load_dependency_lock()["firmware"]
+        self.assertEqual(picoctl.FIRMWARE_NAME, locked["filename"])
+        self.assertEqual(picoctl.FIRMWARE_URL, locked["url"])
+        self.assertEqual(picoctl.FIRMWARE_SHA256, locked["sha256"])
+        self.assertEqual(picoctl.FIRMWARE_SIZE, locked["size"])
+        self.assertTrue(picoctl.FIRMWARE_NAME.endswith("-micropython.uf2"))
+        self.assertIn("pimoroni-pico-rp2350/releases/download/", picoctl.FIRMWARE_URL)
 
     def test_firmware_download_to_pc_only_and_cache_reuse(self):
         payload = b"test-firmware-UF2"
@@ -108,7 +108,10 @@ class PicoctlTests(unittest.TestCase):
                     picoctl.download_firmware()
 
     def test_package_release_and_digest_are_locked(self):
-        self.assertEqual(picoctl.RELEASE, "2.3.7")
+        locked = picoctl.load_dependency_lock()["modbus"]
+        self.assertEqual(picoctl.RELEASE, locked["version"])
+        self.assertEqual(picoctl.EXPECTED_SHA256, locked["sha256"])
+        self.assertEqual(picoctl.MODBUS_ARCHIVE_NAME, locked["filename"])
         self.assertEqual(len(picoctl.EXPECTED_SHA256), 64)
 
     def test_dry_run_never_connects_to_device(self):

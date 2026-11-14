@@ -19,7 +19,7 @@ from urllib.request import urlopen
 
 REPO = Path(__file__).resolve().parents[1]
 PICO = REPO / "firmware" / "pico"
-COMMON = PICO / "common"
+COMMON = PICO  # Deployed modules live beside the canonical main.py
 RELEASE = "2.3.7"
 EXPECTED_SHA256 = "b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271"
 PYPI_JSON = f"https://pypi.org/pypi/micropython-modbus/{RELEASE}/json"
@@ -171,7 +171,7 @@ def source_files(profile: str, include_tests: bool, main_override: Path | None) 
     files.append((COMMON / "bme688_modbus_extension.py", "bme688_modbus_extension.py"))
     if include_tests:
         files.append((PICO / "tests" / "common_interface_test.py", "common_interface_test.py"))
-    entry = main_override.expanduser().resolve() if main_override else PICO / "profiles" / profile / "main.py"
+    entry = main_override.expanduser().resolve() if main_override else (PICO / "main.py" if profile == "rs485" else PICO / "profiles" / "uart" / "main.py")
     files.append((entry, "main.py"))
     missing = [str(source) for source, _ in files if not source.is_file()]
     if missing:

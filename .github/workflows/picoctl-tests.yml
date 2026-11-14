@@ -1,0 +1,25 @@
+name: Pico 2 provisioning tests
+
+on:
+  push:
+    branches:
+      - feat/pico2-repeatable-provisioning
+  pull_request:
+    paths:
+      - 'tools/picoctl.py'
+      - 'tests/test_picoctl.py'
+      - 'firmware/pico/**'
+      - '.github/workflows/picoctl-tests.yml'
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Execute provisioning tests
+        run: python -m unittest discover -s tests -p 'test_picoctl.py' -v

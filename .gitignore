@@ -79,3 +79,6 @@ htmlcov/
 
 # Cached known-good Pimoroni UF2 (downloaded by picoctl, never flashed)
 .pico-firmware/
+
+# Host-side record of picoctl deploy/push operations
+.pico-deployments/

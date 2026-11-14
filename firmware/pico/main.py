@@ -1,27 +1,42 @@
 """
-bme688_modbus_rs485_pico.py
+main.py — Pico 2 socket firmware (outdoor box)
 
-P4-08 — SparkFun RS-485 half-duplex
+Derived from bme688_modbus_rs485_pico.py (P4-08 bench, preserved
+unchanged in profiles/bench/main.py and in experiments/). Changes:
+
+    - Pin map of the Pico 2 socket:
+        RS-485 RTS  GP6 -> GP2   (RS-485 on physical pins 1-4)
+        BME688 I2C1 GP2/GP3 -> GP6/GP7
+    - DHT11 not installed in the socket (replaced in the box by the
+      Grove temperature sensor, which is NOT read by this version).
+      Registers 200-201 stay 0 and 202 reports NOT_INSTALLED (3).
+    - register_map_version 0x0101 -> 0x0102 because of the new
+      sensor_status code. Layout of all registers is unchanged.
+
+STATUS: NOT validated on hardware. Rewire the bench to the socket
+pin map before running it; with the old wiring RS-485 stops
+answering.
 
 Raspberry Pi Pico 2
 Pimoroni MicroPython 1.29.0
 
 Hardware:
-    UART0:
-        TX = GP0
-        RX = GP1
+    UART0 (RS-485, SparkFun SP3485 breakout):
+        TX  = GP0  (pin 1)
+        RX  = GP1  (pin 2)
+        RTS = GP2  (pin 4)
         115200 8N1
 
     BME688:
         I2C1
-        SDA = GP2
-        SCL = GP3
+        SDA = GP6  (pin 9)
+        SCL = GP7  (pin 10)
         Address = 0x76
 
     DHT11:
-        DATA = GP15
+        not installed (DHT11_INSTALLED = False)
 
-Register Map v1.1:
+Register Map v1.2 (= v1.1 + sensor_status code 3):
 
 COILS
     100 run_enable
@@ -31,15 +46,15 @@ HOLDING REGISTERS
     101 sample_interval_s
 
 INPUT REGISTERS
-    200 DHT11 temperature_c x100       int16
-    201 DHT11 humidity_pct x100        uint16
-    202 DHT11 sensor_status            enum
+    200 DHT11 temperature_c x100       int16   (0 if not installed)
+    201 DHT11 humidity_pct x100        uint16  (0 if not installed)
+    202 DHT11 sensor_status            enum    (3 = NOT_INSTALLED)
     203 device_state                   enum
     204 uptime_s HIGH
     205 uptime_s LOW
     206 sample_counter HIGH
     207 sample_counter LOW
-    208 register_map_version           0x0101
+    208 register_map_version           0x0102
 
     209 BME688 temperature_c x100      int16
     210 BME688 humidity_pct x100       uint16
@@ -81,15 +96,23 @@ from environmental_reading import (  # type: ignore
     SENSOR_STATUS_NO_DATA,
 )
 
+# Register Map v1.2: the sensor is not fitted on this board.
+# Defined here, not in environmental_reading.py, so the shared
+# modules stay identical to the validated bench copies.
+SENSOR_STATUS_NOT_INSTALLED = 3
+
 
 # ================================================================
 # Hardware
 # ================================================================
 
+# The Pico 2 socket has no DHT11 connector. With False, GP15 is not
+# touched, the DHT11 is never read, and it does not set FAULT.
+DHT11_INSTALLED = False
 DHT_PIN = 15
 
-BME688_SDA_PIN = 2
-BME688_SCL_PIN = 3
+BME688_SDA_PIN = 6
+BME688_SCL_PIN = 7
 BME688_ADDRESS = 0x76
 
 UART_ID = 0
@@ -100,7 +123,7 @@ BAUD_RATE = 115200
 UNIT_ID = 1
 
 # RS-485 half-duplex direction control pin (RTS)
-RS485_RTS_PIN = 6
+RS485_RTS_PIN = 2
 
 # Turnaround: pausa antes de responder para que la Pi vuelva a
 # recepción. Validado con rs485_turnaround_diag (P4-08): con el método
@@ -119,7 +142,7 @@ COIL_READ_NOW = 102
 IREG_START = 200
 IREG_COUNT = 17
 
-REGISTER_MAP_VERSION = 0x0101
+REGISTER_MAP_VERSION = 0x0102
 
 
 # ------------------------------------------------
@@ -192,7 +215,11 @@ read_now_pending = False
 
 dht_temperature_scaled = 0
 dht_humidity_scaled = 0
-dht_sensor_status = SENSOR_STATUS_NO_DATA
+dht_sensor_status = (
+    SENSOR_STATUS_NO_DATA
+    if DHT11_INSTALLED
+    else SENSOR_STATUS_NOT_INSTALLED
+)
 
 
 # ------------------------------------------------
@@ -291,8 +318,10 @@ def split_uint32(value):
 # Sensores
 # ================================================================
 
-dht11 = DHT11Sensor(
-    pin=DHT_PIN,
+dht11 = (
+    DHT11Sensor(pin=DHT_PIN)
+    if DHT11_INSTALLED
+    else None
 )
 
 
@@ -357,7 +386,7 @@ except (AttributeError, ValueError) as exc:
 # P4-08 — SparkFun RS-485 half-duplex
 #
 # Board : Raspberry Pi Pico 2
-# RTS   : GP6 (physical pin 9)
+# RTS   : GP2 (physical pin 4)
 #
 # LOW  = Receive
 # HIGH = Transmit
@@ -817,7 +846,12 @@ def perform_acquisition(source):
     global device_state
 
 
-    dht_ok = acquire_dht11()
+    # Not installed: skip the read; it must not set FAULT.
+    dht_ok = (
+        acquire_dht11()
+        if DHT11_INSTALLED
+        else True
+    )
 
     bme_ok = acquire_bme688()
 
@@ -1346,19 +1380,19 @@ def update_periodic_sampling():
 
 print()
 print("========================================")
-print(" P3-04 Environmental Modbus Firmware")
+print(" Pico 2 socket — Environmental Modbus RS-485")
 print("========================================")
 print("Unit ID        :", UNIT_ID)
-print("UART           : UART0 GP0/GP1")
+print("UART           : UART0 GP0/GP1, RTS GP2")
 print("Serial         : 115200 8N1")
-print("DHT11          : GP15")
-print("BME688         : I2C GP2/GP3 @ 0x76")
+print("DHT11          :", "GP15" if DHT11_INSTALLED else "NOT INSTALLED")
+print("BME688         : I2C1 GP6/GP7 @ 0x76")
 print("run_enable     : False")
 print("interval       :", sample_interval_s)
 print("device_state   : STOPPED")
-print("DHT status     : NO_DATA")
+print("DHT status     :", dht_sensor_status)
 print("BME status     : NO_DATA")
-print("Map version    : 0x0101")
+print("Map version    : 0x{:04X}".format(REGISTER_MAP_VERSION))
 print("P2 patches     : ENABLED")
 print()
 print("Input Registers:")

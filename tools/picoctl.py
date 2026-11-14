@@ -310,6 +310,8 @@ for name in ('pimoroni_i2c', 'breakout_bme68x', 'umodbus'):
     print(result.strip())
     if "WS_PLATFORM: rp2" not in result:
         raise ProvisionError("Device is not an RP2/RP2350 MicroPython board")
+    if "RP2350" not in result:
+        raise ProvisionError("This installer requires a Raspberry Pi Pico 2 (RP2350); detected another RP2 board")
     if "WS_IMPORT: breakout_bme68x OK" not in result or "WS_IMPORT: pimoroni_i2c OK" not in result:
         raise ProvisionError("Pimoroni drivers missing; verify the preinstalled UF2 (not flashed by this tool)")
     if "WS_IMPORT: umodbus MISSING" in result:

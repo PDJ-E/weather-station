@@ -1,5 +1,6 @@
 """Host-side provisioning regression tests; no connected Pico is required."""
 import io
+import hashlib
 import importlib.util
 from pathlib import Path
 import tarfile
@@ -14,6 +15,52 @@ SPEC.loader.exec_module(picoctl)
 
 
 class PicoctlTests(unittest.TestCase):
+    def test_firmware_is_pinned_to_original_pimoroni_build(self):
+        self.assertEqual(picoctl.FIRMWARE_NAME, "rpi_pico2-v1.29.0-micropython.uf2")
+        self.assertIn("pimoroni-pico-rp2350", picoctl.FIRMWARE_URL)
+        self.assertEqual(picoctl.FIRMWARE_SIZE, 1_833_472)
+        self.assertEqual(
+            picoctl.FIRMWARE_SHA256,
+            "2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3",
+        )
+
+    def test_firmware_download_to_pc_only_and_cache_reuse(self):
+        payload = b"test-firmware-UF2"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            with mock.patch.object(picoctl, "FIRMWARE_DIR", path), mock.patch.object(
+                picoctl, "FIRMWARE_SIZE", len(payload)
+            ), mock.patch.object(
+                picoctl, "FIRMWARE_SHA256", hashlib.sha256(payload).hexdigest()
+            ), mock.patch.object(
+                picoctl, "urlopen", return_value=io.BytesIO(payload)
+            ) as get, mock.patch.object(
+                picoctl, "mpremote", side_effect=AssertionError("Never flash firmware")
+            ):
+                saved = picoctl.download_firmware()
+                self.assertEqual(saved.read_bytes(), payload)
+                self.assertEqual(saved, path / picoctl.FIRMWARE_NAME)
+                self.assertEqual(picoctl.download_firmware(offline=True), saved)
+                self.assertEqual(get.call_count, 1)
+
+    def test_firmware_offline_uncached_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(picoctl, "FIRMWARE_DIR", Path(tmp)), mock.patch.object(
+                picoctl, "urlopen", side_effect=AssertionError("Offline must not fetch")
+            ):
+                with self.assertRaises(picoctl.ProvisionError):
+                    picoctl.download_firmware(offline=True)
+
+    def test_firmware_corrupt_cache_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / picoctl.FIRMWARE_NAME).write_bytes(b"corrupt")
+            with mock.patch.object(picoctl, "FIRMWARE_DIR", path), mock.patch.object(
+                picoctl, "urlopen", side_effect=AssertionError("Do not overwrite silently")
+            ):
+                with self.assertRaises(picoctl.ProvisionError):
+                    picoctl.download_firmware()
+
     def test_package_release_and_digest_are_locked(self):
         self.assertEqual(picoctl.RELEASE, "2.3.7")
         self.assertEqual(len(picoctl.EXPECTED_SHA256), 64)
@@ -28,7 +75,9 @@ class PicoctlTests(unittest.TestCase):
             (pico / "main.py").write_text("# fixture", encoding="utf-8")
             with mock.patch.object(picoctl, "PICO", pico), mock.patch.object(
                 picoctl, "COMMON", common
-            ), mock.patch.object(picoctl, "mpremote", side_effect=AssertionError):
+            ), mock.patch.object(picoctl, "mpremote", side_effect=AssertionError), mock.patch.object(
+                picoctl, "download_firmware", side_effect=AssertionError
+            ):
                 args = picoctl.parser().parse_args(["deploy", "--port", "COM5"])
                 picoctl.deploy(args)
 

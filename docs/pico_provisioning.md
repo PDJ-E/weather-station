@@ -129,6 +129,21 @@ git switch main
 git pull origin main
 ```
 
+## Dependency lock: versioned, reproducible, reviewable
+
+Third-party artifacts are described in **`firmware/pico/dependencies.lock.json`**. The installer reads this file on startup; the Python source no longer contains embedded dependency URLs, versions, SHA-256 hashes or UF2 byte counts.
+
+The lock records for each artifact:
+
+- Pimoroni: specific Pico 2 board, distribution/version, UF2 filename, official HTTPS release URL, exact byte count, SHA-256 and `action: download_only`.
+- Modbus: Python package/version, source archive filename, official PyPI metadata URL, SHA-256 and on-device install path.
+
+**Why still pin SHA-256?** To guarantee that every Pico provisioned from the same Git commit receives the **same bits**, and to reject altered/corrupt downloads. Removing the hash or automatically accepting a new upstream hash would reduce reproducibility and supply-chain integrity, not improve it.
+
+**Dependency upgrade policy:** update the lock file in its own reviewed pull request, verify official release/compatibility, run the automated tests and hardware checks. Do not automatically substitute `latest`, query remote URLs to redefine trusted digests, or flash the UF2.
+
+Invalid lock structure, hash, URL, model, version/filename combination or flash policy causes the installer to stop safely. Only the lock manifest, not the installer code, needs to change for a compatible dependency version.
+
 ## Artifact and dependency inventory
 
 | Destination | Origin |

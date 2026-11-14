@@ -69,7 +69,7 @@ class PicoctlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
             common = pico
-            common.mkdir()
+            common.mkdir(exist_ok=True)
             for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
                 (common / name).write_text("# fixture", encoding="utf-8")
             (pico / "main.py").write_text("# fixture", encoding="utf-8")
@@ -111,7 +111,7 @@ class PicoctlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
             common = pico
-            common.mkdir()
+            common.mkdir(exist_ok=True)
             for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
                 (common / name).write_text("# fixture", encoding="utf-8")
             (pico / "main.py").write_text("# P4 fixture", encoding="utf-8")
@@ -125,7 +125,7 @@ class PicoctlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
             common = pico
-            common.mkdir()
+            common.mkdir(exist_ok=True)
             for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
                 (common / name).write_text("# fixture", encoding="utf-8")
             app = pico / "profiles" / "uart"

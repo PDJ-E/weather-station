@@ -4,6 +4,34 @@
 
 **Important:** The board already runs the known-good Pimoroni MicroPython 1.29.0. The tool **downloads an archived copy of the UF2 to your Windows PC, never flashes it**, and installs Python application files via mpremote. No automatic erasure or reset.
 
+## The normal workflow: ONE command
+
+Open a terminal in the Weather Station repository (with this branch checked out during testing; after PR #8 is merged, use `main`).
+
+Plug the Pico 2 into USB and run:
+
+```powershell
+python tools/picoctl.py
+```
+
+The installer performs the whole sequence interactively:
+
+1. Installs the host-side `mpremote` dependency **if missing**.
+2. Lists detected USB/serial ports with name and description; asks you to select the Pico (for example, `1` or `COM12`).
+3. Downloads or verifies the **original Pimoroni 1.29.0 UF2**, retaining it on the **PC**, with no flash operation.
+4. Checks Pico model and Pimoroni BME68X drivers (missing `umodbus` at this point is normal on a new board).
+5. Enumerates the Pico filesystem using `mpremote fs ls` and **backs up each existing file**, including nested libraries. Checks copied byte counts. An unexpected empty inventory is an ERROR, not a successful backup.
+6. Downloads or uses the cached and SHA256-verified `micropython-modbus==2.3.7` package. Installs it to `/lib/umodbus/`.
+7. Uploads canonical `firmware/pico/` modules and `main.py` last.
+8. Reads every transferred file back and verifies SHA256, then executes an on-board import test of Modbus and the sensor modules.
+9. Prints a final result and the host-side backup path; does **not** automatically reset the board.
+
+You do **not** need to issue separate commands for discovery, downloads, backup, manual `mpremote mip install`, upload or final import verification. `weather-core` is **not required** to validate the onboard installation: it is only needed for an **optional, separate end-to-end RS-485 communications test** after connecting the full hardware.
+
+**Safety note:** Unlike the old prototype, the one-command workflow fails if an occupied Pico cannot be inventoried or backed up. The earlier `Backed up 0 file(s)` while files were present was **not a valid backup**, so that behavior is no longer permitted.
+
+The commands in later sections are optional troubleshooting and development tests, not routine prerequisites.
+
 ## 1. Get the feature branch locally BEFORE merging PR #8
 
 From your existing Weather Station repository directory in PowerShell:

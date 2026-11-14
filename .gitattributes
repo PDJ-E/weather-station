@@ -1,0 +1,6 @@
+# Treat CAD/manufacturing exports as binary (no text diffs or EOL conversion)
+*.stl binary
+*.step binary
+*.stp binary
+*.f3d binary
+*.3mf binary

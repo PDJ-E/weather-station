@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- First published STL release for the outdoor electronics box, `hardware/cad/exports/outdoor-box/2026-11-09-box-print-set/`: the Pico 2 socket v4 (body, bottom cover, retention frame, hinge and latch post blocks, bus ladder tray v2), holders for buck A, buck B, the Grove temperature sensor and the RS-485 breakouts, and the PWR-DIST spacer. Includes a part list with quantities, fasteners, print settings and checksums. Editable Fusion source is not yet included.
+- `.gitattributes` marking STL, STEP, F3D and 3MF files as binary.
+
 - P4-08 RS-485 bench tests for the SparkFun RS-485 breakouts: a Modbus link test and an environmental (DHT11 + BME688) test for the Pi 5, and the Pico firmware `bme688_modbus_rs485_pico.py` with RTS direction control on GP6.
 - RS-485 turnaround diagnostic (`rs485_turnaround_diag_pi.py` / `rs485_turnaround_diag_pico.py`) that sweeps the Pi direction-control method and the Pico turnaround, with optional hardware timing of the Pi's RTS release through a sense wire.
 - Bounded retries (3) for transport failures in the RS-485 environmental test client; Modbus exception responses are not retried.
@@ -20,6 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- README: new "Outdoor electronics box" and "CAD and manufacturing files" sections; repository structure and status updated for the first STL release.
 - The Pi RS-485 scripts release RTS after a computed frame time (busy-wait) instead of `uart.flush()`: measured RTS release went from 4–20 ms to ~150–200 µs (5 ms worst case under load).
 - The Pico waits `RS485_TURNAROUND_MS = 10` before enabling its RS-485 driver, about twice the worst Pi release measured under load.
 

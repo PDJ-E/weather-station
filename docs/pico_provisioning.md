@@ -1,12 +1,27 @@
-# Pico 2 — repeatable provisioning (Weather Station)
+# Pico 2 — repeatable, traceable provisioning (Weather Station)
 
-**Canonical source:** `firmware/pico/`. Primary entry point `firmware/pico/main.py` is an unchanged copy of the previously used `bme688_modbus_rs485_pico.py`. Only the host installer and repository layout changed.
+**Tool:** [`tools/picoctl.py`](../tools/picoctl.py). **Canonical source:** [`firmware/pico/`](../firmware/pico/) (profiles and pin maps are described in its [README](../firmware/pico/README.md)).
 
-**Important:** The board already runs the known-good Pimoroni MicroPython 1.29.0. The tool **downloads an archived copy of the UF2 to your Windows PC, never flashes it**, and installs Python application files via mpremote. No automatic erasure or reset.
+The Pico already runs the known-good Pimoroni MicroPython 1.29.0. `picoctl` **never flashes, erases or deletes** anything on it: it copies Python files with `mpremote`, checks every copy by SHA-256, and records what it installed.
 
-## The normal workflow: ONE command
+## What gets recorded
 
-Open a terminal in the Weather Station repository (with this branch checked out during testing; after PR #8 is merged, use `main`).
+Every write to the Pico (`deploy` or `push`) leaves two records:
+
+| Where | What |
+|---|---|
+| Pico `/ws_deploy.json` | Profile, Git commit and branch, which sent files were not committed, the SHA-256 and source path of every installed file, and a list of later pushes with their notes |
+| PC `.pico-deployments/log.jsonl` (gitignored) | One line per deploy/push: time, port, profile, commit, backup folder, file hashes |
+
+`picoctl status` reads the Pico back and answers two questions: *is the Pico still what was recorded?* (catches files edited by hand, for example from Thonny) and *does the record still match the repository?* (catches repository changes not yet deployed).
+
+## Host requirements
+
+- Python 3.10+ on the PC, run from the repository root.
+- `mpremote==1.29.0` and `pyserial==3.5` (both in `requirements.txt`). The version of `mpremote` is pinned because `picoctl` parses its output. The interactive installer installs it if it is missing or has a different version.
+- Close Thonny and any serial monitor before running `picoctl`: only one program can hold the Pico's port.
+
+## 1. New or replacement Pico: one command
 
 Plug the Pico 2 into USB and run:
 
@@ -14,144 +29,103 @@ Plug the Pico 2 into USB and run:
 python tools/picoctl.py
 ```
 
-The installer performs the whole sequence interactively:
+The installer:
 
-1. Installs the host-side `mpremote` dependency **if missing**.
-2. Lists detected USB/serial ports with name and description; asks you to select the Pico (for example, `1` or `COM12`).
-3. Downloads or verifies the **original Pimoroni 1.29.0 UF2**, retaining it on the **PC**, with no flash operation.
-4. Checks Pico model and Pimoroni BME68X drivers (missing `umodbus` at this point is normal on a new board).
-5. Enumerates the Pico filesystem using `mpremote fs ls` and **backs up each existing file**, including nested libraries. Checks copied byte counts. An unexpected empty inventory is an ERROR, not a successful backup.
-6. Downloads or uses the cached and SHA256-verified `micropython-modbus==2.3.7` package. Installs it to `/lib/umodbus/`.
-7. Uploads canonical `firmware/pico/` modules and `main.py` last.
-8. Reads every transferred file back and verifies SHA256, then executes an on-board import test of Modbus and the sensor modules.
-9. Prints a final result and the host-side backup path; does **not** automatically reset the board.
+1. Installs the pinned `mpremote` if needed.
+2. Lists serial ports and marks Raspberry Pi devices. If exactly one is found, Enter selects it; otherwise you choose.
+3. Asks for the **profile** (there is no default): `socket`, `bench` or `uart`. Choose the one that matches how the Pico is wired.
+4. Caches the pinned Pimoroni UF2 on the PC as a recovery copy. If that fails (no network), it only warns: the UF2 is never flashed.
+5. Checks the board is an RP2350 with the Pimoroni BME68X drivers.
+6. Backs up every file on the Pico to `.pico-backups/<UTC timestamp>/`, checking sizes. **If the Pico is empty** (a new board), it asks for confirmation before continuing without a backup.
+7. Installs the SHA-256-pinned `micropython-modbus==2.3.7` to `/lib/umodbus/`.
+8. Copies the modules, then `main.py` **last**, reading each one back and checking SHA-256.
+9. Runs an on-board import test of Modbus, the Pimoroni drivers and all application modules.
+10. Writes `/ws_deploy.json` and the PC log line, and lists files on the Pico it does not manage (they are left untouched).
 
-You do **not** need to issue separate commands for discovery, downloads, backup, manual `mpremote mip install`, upload or final import verification. `weather-core` is **not required** to validate the onboard installation: it is only needed for an **optional, separate end-to-end RS-485 communications test** after connecting the full hardware.
+It does **not** reset the Pico. Reset or power-cycle it once the sensors and RS-485 wiring are connected.
 
-**Safety note:** Unlike the old prototype, the one-command workflow fails if an occupied Pico cannot be inventoried or backed up. The earlier `Backed up 0 file(s)` while files were present was **not a valid backup**, so that behavior is no longer permitted.
-
-The commands in later sections are optional troubleshooting and development tests, not routine prerequisites.
-
-## 1. Get the feature branch locally BEFORE merging PR #8
-
-From your existing Weather Station repository directory in PowerShell:
+## 2. The same steps as separate commands
 
 ```powershell
-git status
-git fetch origin
-git switch --track origin/feat/pico2-repeatable-provisioning
+# See the plan; nothing is contacted or written.
+python tools/picoctl.py deploy --profile socket
+
+# Back up, install, verify and record.
+python tools/picoctl.py deploy --profile socket --port COM12 --apply
 ```
 
-If the local feature branch already exists, instead use `git switch feat/pico2-repeatable-provisioning` followed by `git pull`. Resolve or stash any uncommitted changes before switching. Do **not** merge the PR first; this branch exists for testing.
+- `--port` is required for every command that talks to the Pico. `auto` is refused: each `mpremote` call would resolve it separately, so with two boards attached the backup and the install could go to different devices. List ports with `python -m mpremote connect list`.
+- `--skip-backup` is only for a Pico known to be empty.
+- `--include-tests` also copies `common_interface_test.py`.
+- `--main PATH` installs a specific `main.py` instead of the profile's; the record marks it as an override.
+- `--offline` uses only the cached UF2 and `micropython-modbus` archive. `--archive PATH` supplies the archive.
+- `--reset` starts `main.py` after deploying.
+- If any deployed file has uncommitted changes, the deploy still runs but warns, and the record lists those files. The commit alone then does not reproduce the deployment; the recorded SHA-256 values do.
 
-## 2. Host-only tests (no Pico required)
+Other commands:
+
+```powershell
+python tools/picoctl.py doctor --port COM12   # board model and drivers
+python tools/picoctl.py backup --port COM12   # full backup to .pico-backups/
+python tools/picoctl.py firmware              # cache/verify the UF2 on the PC only
+python tools/picoctl.py status --port COM12   # compare the Pico with its record and the repo
+```
+
+`status` exits with `0` when the Pico matches its record and `1` when it does not (or has no record).
+
+## 3. Experiments: `push` instead of copying by hand
+
+For bench work (a diagnostic script, a modified `main.py` from `experiments/`), use `push`. It replaces manual copying with the same guarantees as a deploy:
+
+```powershell
+# Plan only.
+python tools/picoctl.py push experiments/rs485/rs485_turnaround_diag_pico.py --as main.py
+
+# Copy, verify and record, with a reason.
+python tools/picoctl.py push experiments/rs485/rs485_turnaround_diag_pico.py --as main.py `
+    --port COM12 --apply --note "turnaround diagnostic"
+```
+
+- Files go to the Pico root. `--as` renames a single file (usually to `main.py`).
+- Any Pico file about to be overwritten is first backed up to `.pico-backups/<timestamp>-push/`.
+- A new `main.py` is copied after the other files of the same push.
+- The push is appended to `/ws_deploy.json` (which file came from which repository path and commit, plus the note) and to the PC log. `status` then shows it.
+- To return to a profile, run `deploy` again.
+
+## 4. Check the RS-485 link from `weather-core`
+
+The Pi-side test must match the profile on the Pico:
+
+| Pico profile | Pi test | Expects |
+|---|---|---|
+| `socket` | `python experiments/rs485/p4_socket_environmental_test_pi.py` | Map `0x0102`, DHT11 `NOT_INSTALLED`, BME688 OK, no `FAULT` |
+| `bench` | `python experiments/rs485/rs485_environmental_test_pi.py` | Map `0x0101`, DHT11 and BME688 OK |
+
+Both use `/dev/ttyAMA0`, RTS on GPIO17, Unit ID 1, and require `run_enable = 0` (stopped). **Rewire the bench before deploying `socket`:** RTS moves from Pico pin 9 to pin 4, and the BME688 from pins 4/5 to pins 9/10. The P4 long-run runner (`p4_rs485_long_run.py`) still expects map `0x0101`.
+
+## 5. Host-only tests
 
 ```powershell
 python -m unittest discover -s tests -p "test_picoctl.py" -v
 ```
 
-These test the dry run, profile resolution and UF2 cache integrity behavior using mocks. GitHub Actions also runs these tests when PR #8 updates. These are **not** hardware integration tests.
+They run without a Pico: the lock, downloads, backup and the full deploy → status → push sequence are exercised against a simulated Pico filesystem. GitHub Actions runs them, plus an `mpy-cross` compile of every firmware file, on pull requests and on pushes to `main`. They are not hardware tests.
 
-## 3. Download and preserve the tested Pimoroni UF2
+## Dependency lock
 
-```powershell
-python tools/picoctl.py firmware
-Get-FileHash .pico-firmware\rpi_pico2-v1.29.0-micropython.uf2 -Algorithm SHA256
-```
+Third-party artifacts are pinned in [`firmware/pico/dependencies.lock.json`](../firmware/pico/dependencies.lock.json):
 
-Expected SHA256:
+- **Pimoroni UF2:** board, distribution and version, filename, official HTTPS release URL, exact size, SHA-256 and `action: download_only`.
+- **micropython-modbus:** package and version, sdist filename, PyPI metadata URL, SHA-256 and on-device path.
+
+Expected UF2 SHA-256 (`.pico-firmware/rpi_pico2-v1.29.0-micropython.uf2`, gitignored):
 
 ```text
 2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3
 ```
 
-Original official release, now in archived repository:
-https://github.com/pimoroni/pimoroni-pico-rp2350/releases/download/v1.29.0/rpi_pico2-v1.29.0-micropython.uf2
+The hashes are pins, not checks against "latest": every Pico provisioned from the same commit gets the same bits, and altered or corrupt downloads are rejected. Update the lock in its own reviewed pull request, after checking compatibility, running these tests and a hardware check. An invalid lock (structure, hash, URL, board, version/filename or flash policy) stops the installer.
 
-Local path: `.pico-firmware/rpi_pico2-v1.29.0-micropython.uf2` (gitignored). Correct board: RPI_PICO2 (RP2350), not Pico/Pico 2 W. The installer verifies the official asset's byte size and SHA256, downloads only if missing, and refuses an existing corrupt cache. No BOOTSEL or flash step is performed.
+## Recovery
 
-**Note:** Running `deploy --apply` also calls the UF2 downloader automatically if not yet cached. `firmware` lets you download it independently before connecting the Pico. The Pico itself needs no network access.
-
-## 4. Diagnose a physical replacement Pico on USB
-
-Install host tool and close Thonny/serial monitors:
-
-```powershell
-python -m pip install mpremote
-python -m mpremote connect list
-python tools/picoctl.py doctor --port COM5
-```
-
-Replace `COM5` with the serial port reported on **your computer**. This checks RP2 MicroPython and `pimoroni_i2c` / `breakout_bme68x` imports. It does not compare UF2 flash bytes. Connect the Pico by USB only; avoid simultaneous external power to the board during provisioning.
-
-## 5. Dry-run deployment, then actual installation
-
-```powershell
-# Display deployment plan. Does not contact or modify the board.
-python tools/picoctl.py deploy --profile rs485 --port COM5
-
-# Backup existing MicroPython files; then install and verify.
-python tools/picoctl.py deploy --profile rs485 --port COM5 --apply
-```
-
-The real command automatically caches the UF2 on your PC, then confirms drivers, backs up files under `.pico-backups/<UTC timestamp>/`, downloads/checks the pinned `micropython-modbus==2.3.7` archive, installs `/lib/umodbus/`, deploys application modules from `firmware/pico/`, and writes `main.py` **last**. Every transfer is read back and checked with SHA256. It does not restart the board unless explicitly passed `--reset`.
-
-For a definitely empty new Pico, `--skip-backup` is optional, but not recommended for the first hardware test.
-
-The optional `common_interface_test.py` is included only with `--include-tests`. The extra BME688 extension file is retained for file parity although P4 main integrates its registers. If you need the older direct TTL UART version, choose `--profile uart`; this changes the entry point, not the common modules.
-
-## 6. Verify imports after transfer
-
-```powershell
-python -m mpremote connect COM5 exec "from umodbus.serial import ModbusRTU; import breakout_bme68x; print('IMPORTS OK')"
-python -m mpremote connect COM5 fs ls
-python -m mpremote connect COM5 fs ls :/lib/umodbus
-```
-
-After confirming that the correct sensors/transceiver are connected, reset or power-cycle the Pico to start `main.py`. A successful import alone is **not** an RS-485 integration test.
-
-## 7. End-to-end link test on weather-core (after reconnecting hardware)
-
-The default P4 firmware expects: BME688 I²C1 GP2/GP3, address `0x76`; DHT11 GP15; UART0 GP0/GP1 at 115200 8N1; RS-485 direction/RTS GP6. On the Raspberry Pi 5, the existing test uses `/dev/ttyAMA0`, direction GPIO17 and Modbus Unit ID 1.
-
-From an updated copy of the repository on `weather-core`, with its Python environment and serial/GPIO dependencies installed:
-
-```bash
-python experiments/rs485/rs485_environmental_test_pi.py
-```
-
-This existing P4-08 test expects register-map version `0x0101`, `run_enable=0` (stopped), and three READ_NOW acquisitions with status OK from **both** the DHT11 and BME688. It prints `P4-08 RS485 ENVIRONMENTAL TEST: PASS` only if those checks succeed. Do not run it before connecting both sensors.
-
-If this passes, report the test output, mark PR #8 ready for review, merge into `main` using GitHub and return to your development PC:
-
-```powershell
-git switch main
-git pull origin main
-```
-
-## Dependency lock: versioned, reproducible, reviewable
-
-Third-party artifacts are described in **`firmware/pico/dependencies.lock.json`**. The installer reads this file on startup; the Python source no longer contains embedded dependency URLs, versions, SHA-256 hashes or UF2 byte counts.
-
-The lock records for each artifact:
-
-- Pimoroni: specific Pico 2 board, distribution/version, UF2 filename, official HTTPS release URL, exact byte count, SHA-256 and `action: download_only`.
-- Modbus: Python package/version, source archive filename, official PyPI metadata URL, SHA-256 and on-device install path.
-
-**Why still pin SHA-256?** To guarantee that every Pico provisioned from the same Git commit receives the **same bits**, and to reject altered/corrupt downloads. Removing the hash or automatically accepting a new upstream hash would reduce reproducibility and supply-chain integrity, not improve it.
-
-**Dependency upgrade policy:** update the lock file in its own reviewed pull request, verify official release/compatibility, run the automated tests and hardware checks. Do not automatically substitute `latest`, query remote URLs to redefine trusted digests, or flash the UF2.
-
-Invalid lock structure, hash, URL, model, version/filename combination or flash policy causes the installer to stop safely. Only the lock manifest, not the installer code, needs to change for a compatible dependency version.
-
-## Artifact and dependency inventory
-
-| Destination | Origin |
-| --- | --- |
-| Host `.pico-firmware/rpi_pico2-v1.29.0-micropython.uf2` | Pinned official Pimoroni v1.29.0 release — **downloaded only** |
-| Pico `/lib/umodbus/` | PyPI `micropython-modbus==2.3.7`, SHA256 `b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271` |
-| Pico `/main.py` | `firmware/pico/main.py` — unchanged original P4 application |
-| Pico `/environmental_reading.py`, `/dht11_sensor.py`, `/bme688_sensor.py`, `/pico_modbus_patch.py`, `/bme688_modbus_extension.py` | `firmware/pico/` |
-| Pico `/common_interface_test.py` | Optional source in `firmware/pico/`, copy with `--include-tests` |
-
-No automatic flash, flash erasure, file deletion, rollback, or reset. Failure aborts the process and preserves backups; restore manually if needed. A change of Pimoroni UF2 or micropython-modbus library version requires a separate compatibility evaluation.
+`picoctl` never deletes, rolls back or resets automatically. A failure stops the process and keeps the backup. To restore, copy the files from the backup folder back with `mpremote fs cp` (or `push` them).

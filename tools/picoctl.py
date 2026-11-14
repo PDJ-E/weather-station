@@ -2,16 +2,27 @@
 """Host-side provisioning for Weather Station Raspberry Pi Pico 2.
 
 Preserves the already-flashed Pimoroni MicroPython UF2; never erases flash.
+
+Every write to the Pico (``deploy`` or ``push``) is recorded twice:
+
+* on the Pico, in ``/ws_deploy.json`` (what is installed, from which Git
+  commit, with the SHA-256 of every file), and
+* on the PC, appended to ``.pico-deployments/log.jsonl``.
+
+``status`` reads the Pico back and compares it with that record and with
+the current repository.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from importlib import metadata
 import json
-import re
 import os
 from pathlib import Path
+import platform
+import re
 import subprocess
 import sys
 import tarfile
@@ -23,11 +34,48 @@ PICO = REPO / "firmware" / "pico"
 COMMON = PICO  # Deployed modules live beside the canonical main.py
 LOCK_FILE = PICO / "dependencies.lock.json"
 FIRMWARE_DIR = REPO / ".pico-firmware"
+BACKUP_ROOT = REPO / ".pico-backups"
+LOG_FILE = REPO / ".pico-deployments" / "log.jsonl"
 CORE = ("environmental_reading.py", "dht11_sensor.py", "bme688_sensor.py", "pico_modbus_patch.py")
+# Kept for file parity with the previously used Pico; main.py does not import it.
+EXTRA_MODULES = ("bme688_modbus_extension.py",)
+
+MANIFEST_NAME = "ws_deploy.json"
+MANIFEST_SCHEMA = 1
+
+# Host tool pin. The backup parses `mpremote fs ls` text output, and
+# status parses `mpremote fs sha256sum`, so the version must not float.
+MPREMOTE_VERSION = "1.29.0"
+
+# Raspberry Pi USB vendor ID (Pico / Pico 2 running MicroPython).
+RASPBERRY_PI_USB_VID = 0x2E8A
+
+# Application entry points. The pin map is part of the profile because
+# deploying firmware with the wrong wiring silently kills the RS-485 link.
+PROFILES = {
+    "socket": {
+        "main": Path("main.py"),
+        "summary": "Pico 2 socket (outdoor box): RS-485 RTS GP2, BME688 I2C1 GP6/GP7, "
+                   "DHT11 not installed, register map 0x0102. NOT yet validated on hardware.",
+    },
+    "bench": {
+        "main": Path("profiles") / "bench" / "main.py",
+        "summary": "P4-08 RS-485 bench (validated): RTS GP6, BME688 I2C1 GP2/GP3, "
+                   "DHT11 GP15, register map 0x0101.",
+    },
+    "uart": {
+        "main": Path("profiles") / "uart" / "main.py",
+        "summary": "P3 direct TTL UART bench (historical): no RS-485 transceiver.",
+    },
+}
 
 
 class ProvisionError(RuntimeError):
     """A recoverable provisioning error."""
+
+
+class EmptyDeviceError(ProvisionError):
+    """The Pico filesystem was listed successfully and holds no files."""
 
 
 def load_dependency_lock(path: Path = LOCK_FILE) -> dict:
@@ -112,12 +160,34 @@ FIRMWARE_SHA256 = DEPENDENCIES["firmware"]["sha256"]
 FIRMWARE_SIZE = DEPENDENCIES["firmware"]["size"]
 
 
+# ----------------------------------------------------------------------
+# Low-level helpers
+# ----------------------------------------------------------------------
+
 def file_sha(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def require_port(port: str | None) -> str:
+    """Device commands need one explicit port.
+
+    `auto` is refused: each mpremote call resolves it on its own, so with
+    two boards attached a backup and a deploy could hit different devices.
+    """
+    if not port or port.strip().lower() == "auto":
+        raise ProvisionError(
+            "Give the Pico's port explicitly, e.g. --port COM12 "
+            "(list ports with: python -m mpremote connect list)"
+        )
+    return port
 
 
 def mpremote(port: str, *args: str, timeout: int = 35) -> str:
@@ -134,14 +204,120 @@ def mpremote(port: str, *args: str, timeout: int = 35) -> str:
     return result.stdout
 
 
+def installed_mpremote_version() -> str | None:
+    try:
+        return metadata.version("mpremote")
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def ensure_mpremote() -> None:
+    found = installed_mpremote_version()
+    if found is None:
+        raise ProvisionError(
+            f"Install mpremote: python -m pip install mpremote=={MPREMOTE_VERSION}"
+        )
+    if found != MPREMOTE_VERSION:
+        raise ProvisionError(
+            f"mpremote {found} found, {MPREMOTE_VERSION} required (its output format is "
+            f"parsed). Run: python -m pip install mpremote=={MPREMOTE_VERSION}"
+        )
+
+
+def bootstrap_mpremote() -> None:
+    """The interactive one-command workflow installs its pinned host dependency."""
+    try:
+        ensure_mpremote()
+        return
+    except ProvisionError as exc:
+        print(f"{exc}\nInstalling mpremote=={MPREMOTE_VERSION} ...")
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "show", "mpremote"],
-        capture_output=True, text=True,
+        [sys.executable, "-m", "pip", "install", f"mpremote=={MPREMOTE_VERSION}"],
+        check=False,
     )
     if result.returncode:
-        raise ProvisionError("Install mpremote: python -m pip install mpremote")
+        raise ProvisionError(
+            "Failed to install mpremote. Install it once with: "
+            f"python -m pip install mpremote=={MPREMOTE_VERSION}"
+        )
+    ensure_mpremote()
 
+
+# ----------------------------------------------------------------------
+# Git traceability
+# ----------------------------------------------------------------------
+
+def _git(*args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO), *args],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    # Not stripped: `git status --porcelain` lines start with a space.
+    return result.stdout if result.returncode == 0 else None
+
+
+def repo_relative(path: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(REPO).as_posix()
+    except ValueError:
+        return None
+
+
+def git_snapshot(sources: list[Path]) -> dict:
+    """Commit, branch and the state of the files being sent to the Pico."""
+    commit = (_git("rev-parse", "HEAD") or "").strip() or None
+    info = {
+        "commit": commit,
+        "branch": (_git("rev-parse", "--abbrev-ref", "HEAD") or "").strip() or None,
+        "modified_files": [],
+        "untracked_files": [],
+        "outside_repo_files": [],
+    }
+    rel_paths = []
+    for source in sources:
+        rel = repo_relative(source)
+        if rel is None:
+            info["outside_repo_files"].append(str(source))
+        else:
+            rel_paths.append(rel)
+    if commit and rel_paths:
+        status = _git("status", "--porcelain", "--untracked-files=all", "--", *rel_paths) or ""
+        for line in status.splitlines():
+            if len(line) < 4:
+                continue
+            code, name = line[:2], line[3:].strip().strip('"')
+            (info["untracked_files"] if code == "??" else info["modified_files"]).append(name)
+    info["clean"] = bool(commit) and not (
+        info["modified_files"] or info["untracked_files"] or info["outside_repo_files"]
+    )
+    return info
+
+
+def describe_git(info: dict) -> str:
+    if not info.get("commit"):
+        return "Git: unavailable (deployment recorded without a commit)"
+    text = f"Git: {info['commit'][:12]} on {info.get('branch')}"
+    if info["clean"]:
+        return text + " (all sent files committed)"
+    extra = info["modified_files"] + info["untracked_files"] + info["outside_repo_files"]
+    return text + " — NOT committed: " + ", ".join(extra)
+
+
+def append_log(entry: dict) -> None:
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"WARNING: could not append to host log {LOG_FILE}: {exc}")
+
+
+# ----------------------------------------------------------------------
+# Device filesystem
+# ----------------------------------------------------------------------
 
 def list_device_entries(port: str, directory: str = "") -> list[tuple[str, bool, int]]:
     """Read Pico filesystem using the same mpremote fs ls API as users.
@@ -181,8 +357,8 @@ def list_device_entries(port: str, directory: str = "") -> list[tuple[str, bool,
     return entries
 
 
-def device_inventory(port: str) -> list[tuple[str, int]]:
-    """Enumerate and size-check Pico files before overwriting anything."""
+def device_files(port: str) -> list[tuple[str, int]]:
+    """Every file on the Pico as (path, size); may be empty."""
     stack = [""]
     files = []
     visited = set()
@@ -198,20 +374,29 @@ def device_inventory(port: str) -> list[tuple[str, int]]:
                 files.append((name, size))
         if len(files) > 1000 or len(visited) > 100:
             raise ProvisionError("Unexpectedly large Pico inventory; refusing backup")
-
-    # Fail closed: Pico already holding files MUST NOT report 0 backups.
-    # On a genuinely blank board, --skip-backup is the explicit opt-in.
-    if not files:
-        raise ProvisionError(
-            "Found no files to back up. Refusing unsafe empty backup; "
-            "use --skip-backup only if the Pico is definitely empty."
-        )
     return sorted(files)
 
 
+def device_inventory(port: str) -> list[tuple[str, int]]:
+    """Enumerate and size-check Pico files before overwriting anything."""
+    files = device_files(port)
+    # Fail closed: an empty listing is only accepted by an explicit decision.
+    if not files:
+        raise EmptyDeviceError(
+            "The Pico filesystem is empty: there is nothing to back up. "
+            "If this is a new Pico, rerun with --skip-backup (or answer 'y' in the installer)."
+        )
+    return files
 
-def backup(port: str, destination: Path) -> Path:
-    inventory = device_inventory(port)
+
+def backup(port: str, destination: Path, only: list[str] | None = None) -> Path:
+    """Copy Pico files to the PC and check their sizes.
+
+    ``only`` limits the backup to those device paths (used by ``push``).
+    """
+    inventory = device_inventory(port) if only is None else [
+        item for item in device_files(port) if item[0] in only
+    ]
     destination.mkdir(parents=True, exist_ok=False)
     for name, expected_size in inventory:
         local = destination / name
@@ -233,6 +418,62 @@ def backup(port: str, destination: Path) -> Path:
     return destination
 
 
+def device_sha256(port: str, paths: list[str]) -> dict[str, str]:
+    """SHA-256 of Pico files, computed on the Pico by `mpremote fs sha256sum`."""
+    if not paths:
+        return {}
+    output = mpremote(port, "fs", "sha256sum", *[":/" + p for p in paths], timeout=120)
+    digests: dict[str, str] = {}
+    current = None
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("sha256sum :"):
+            current = line[len("sha256sum :"):].lstrip("/")
+        elif re.fullmatch(r"[0-9a-f]{64}", line) and current is not None:
+            digests[current] = line
+            current = None
+        elif line:
+            raise ProvisionError(f"Unrecognized mpremote sha256sum output: {line!r}")
+    missing = [p for p in paths if p not in digests]
+    if missing:
+        raise ProvisionError("No SHA-256 reported for: " + ", ".join(missing))
+    return digests
+
+
+def verify_copy(port: str, source: Path, remote: str, scratch: Path) -> None:
+    local = scratch / (str(len(list(scratch.iterdir()))) + "-" + source.name)
+    mpremote(port, "fs", "cp", ":/" + remote, str(local), timeout=90)
+    if file_sha(local) != file_sha(source):
+        raise ProvisionError(f"SHA256 read-back mismatch: {remote}")
+
+
+def read_manifest(port: str) -> dict | None:
+    """The deployment record on the Pico, or None when there is none."""
+    names = [name for name, _ in device_files(port)]
+    if MANIFEST_NAME not in names:
+        return None
+    with tempfile.TemporaryDirectory(prefix="weather-station-manifest-") as td:
+        local = Path(td) / MANIFEST_NAME
+        mpremote(port, "fs", "cp", ":/" + MANIFEST_NAME, str(local), timeout=30)
+        try:
+            manifest = json.loads(local.read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ProvisionError(f"/{MANIFEST_NAME} on the Pico is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
+        raise ProvisionError(f"/{MANIFEST_NAME} has an unknown schema")
+    return manifest
+
+
+def write_manifest(port: str, manifest: dict, scratch: Path) -> None:
+    local = scratch / MANIFEST_NAME
+    local.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    mpremote(port, "fs", "cp", str(local), ":/" + MANIFEST_NAME, timeout=30)
+    verify_copy(port, local, MANIFEST_NAME, scratch)
+
+
+# ----------------------------------------------------------------------
+# Host-side artifacts
+# ----------------------------------------------------------------------
 
 def download_firmware(offline: bool = False) -> Path:
     """Cache the exact known-good UF2 on the PC. NEVER flash the board."""
@@ -279,6 +520,16 @@ def download_firmware(offline: bool = False) -> Path:
     return target
 
 
+def cache_uf2_best_effort(offline: bool) -> None:
+    """The UF2 is a recovery copy for the PC; deploying never needs it."""
+    try:
+        download_firmware(offline)
+    except (ProvisionError, OSError) as exc:
+        print(f"WARNING: UF2 recovery copy not available ({exc}). "
+              "Deployment continues: the UF2 is never flashed. "
+              "Cache it later with: python tools/picoctl.py firmware")
+
+
 def cache_file() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
@@ -298,9 +549,9 @@ def acquire_modbus(offline: bool, supplied_archive: Path | None) -> Path:
             if offline:
                 raise ProvisionError(f"Offline cache missing: {archive}")
             with urlopen(PYPI_JSON, timeout=20) as response:
-                metadata = json.load(response)
+                metadata_json = json.load(response)
             matches = [
-                item for item in metadata["urls"]
+                item for item in metadata_json["urls"]
                 if item["filename"] == MODBUS_ARCHIVE_NAME
             ]
             if len(matches) != 1 or matches[0]["digests"]["sha256"] != EXPECTED_SHA256:
@@ -310,9 +561,14 @@ def acquire_modbus(offline: bool, supplied_archive: Path | None) -> Path:
             if hashlib.sha256(payload).hexdigest() != EXPECTED_SHA256:
                 raise ProvisionError("Downloaded archive SHA256 mismatch")
             archive.parent.mkdir(parents=True, exist_ok=True)
-            archive.write_bytes(payload)
+            partial = archive.with_suffix(archive.suffix + ".partial")
+            partial.write_bytes(payload)
+            os.replace(partial, archive)
     if file_sha(archive) != EXPECTED_SHA256:
-        raise ProvisionError("micropython-modbus 2.3.7 SHA256 mismatch")
+        raise ProvisionError(
+            f"micropython-modbus {RELEASE} SHA256 mismatch: {archive}. "
+            "Delete that file and retry."
+        )
     return archive
 
 
@@ -344,24 +600,26 @@ def extract_umodbus(archive: Path, destination: Path) -> list[Path]:
     return installed
 
 
+# ----------------------------------------------------------------------
+# Deployment
+# ----------------------------------------------------------------------
+
+def profile_main(profile: str) -> Path:
+    if profile not in PROFILES:
+        raise ProvisionError(f"Unknown profile {profile!r}; choose one of {', '.join(PROFILES)}")
+    return PICO / PROFILES[profile]["main"]
+
+
 def source_files(profile: str, include_tests: bool, main_override: Path | None) -> list[tuple[Path, str]]:
-    files = [(COMMON / name, name) for name in CORE]
-    files.append((COMMON / "bme688_modbus_extension.py", "bme688_modbus_extension.py"))
+    files = [(COMMON / name, name) for name in (*CORE, *EXTRA_MODULES)]
     if include_tests:
         files.append((PICO / "common_interface_test.py", "common_interface_test.py"))
-    entry = main_override.expanduser().resolve() if main_override else (PICO / "main.py" if profile == "rs485" else PICO / "profiles" / "uart" / "main.py")
+    entry = main_override.expanduser().resolve() if main_override else profile_main(profile)
     files.append((entry, "main.py"))
     missing = [str(source) for source, _ in files if not source.is_file()]
     if missing:
         raise ProvisionError("Missing source files:\n" + "\n".join(missing))
     return files
-
-
-def verify_copy(port: str, source: Path, remote: str, scratch: Path) -> None:
-    local = scratch / (str(len(list(scratch.iterdir()))) + "-" + source.name)
-    mpremote(port, "fs", "cp", ":/" + remote, str(local), timeout=90)
-    if file_sha(local) != file_sha(source):
-        raise ProvisionError(f"SHA256 read-back mismatch: {remote}")
 
 
 def doctor(port: str) -> None:
@@ -388,95 +646,288 @@ for name in ('pimoroni_i2c', 'breakout_bme68x', 'umodbus'):
         print("INFO: umodbus is not installed yet; the deploy step installs it automatically.")
 
 
-def default_backup_path() -> Path:
+def default_backup_path(suffix: str = "") -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return REPO / ".pico-backups" / stamp
+    return BACKUP_ROOT / (stamp + suffix)
+
+
+def file_record(source: Path) -> dict:
+    return {
+        "sha256": file_sha(source),
+        "size": source.stat().st_size,
+        "source": repo_relative(source) or str(source),
+    }
 
 
 def deploy(args: argparse.Namespace) -> None:
     files = source_files(args.profile, args.include_tests, args.main)
-    print(f"Profile: {args.profile} | MicroPython UF2: unchanged | umodbus: {RELEASE}")
+    git_info = git_snapshot([source for source, _ in files])
+    print(f"Profile: {args.profile} — {PROFILES[args.profile]['summary']}")
+    if args.main:
+        print("  main.py override: the profile's entry point is replaced by --main.")
+    print(f"MicroPython UF2: unchanged | umodbus: {RELEASE} | {describe_git(git_info)}")
     for source, target in files:
-        shown = source.relative_to(REPO) if source.is_relative_to(REPO) else source
-        print(f"  {shown} -> /{target}")
+        print(f"  {repo_relative(source) or source} -> /{target}")
     print("  micropython-modbus (SHA256-pinned) -> /lib/umodbus/")
-    print(f"  Pimoroni UF2 -> host cache .pico-firmware/{FIRMWARE_NAME} (never flashed)")
+    print(f"  deployment record -> /{MANIFEST_NAME} and {LOG_FILE.relative_to(REPO).as_posix()}")
     if not args.apply:
         print("DRY RUN: add --apply --port COMx to deploy.")
         return
 
-    download_firmware(args.offline)
+    port = require_port(args.port)
+    cache_uf2_best_effort(args.offline)
     ensure_mpremote()
-    doctor(args.port)
+    doctor(port)
+
+    backup_path = None
+    previous_files: list[tuple[str, int]] = []
     if args.skip_backup:
         print("WARNING: backup explicitly skipped; use only on a known empty Pico.")
+        previous_files = device_files(port)
     else:
         dest = args.backup_dir or default_backup_path()
         if dest.exists():
             raise ProvisionError(f"Backup directory already exists: {dest}")
-        backup(args.port, dest)
+        try:
+            backup_path = backup(port, dest)
+            inventory = json.loads((dest / "inventory.json").read_text(encoding="utf-8"))
+            previous_files = [(item["path"], item["size"]) for item in inventory["device_files"]]
+        except EmptyDeviceError:
+            confirm = getattr(args, "confirm_empty", None)
+            if confirm is None or not confirm():
+                raise
+            print("Empty Pico confirmed: continuing without a backup.")
 
     archive = acquire_modbus(args.offline, args.archive)
+    records: dict[str, dict] = {}
     with tempfile.TemporaryDirectory(prefix="weather-station-pico-") as td:
         staging = Path(td)
         vendor = staging / "vendor"
         vendor.mkdir()
         vendor_files = extract_umodbus(archive, vendor)
 
-        mpremote(args.port, "exec", "import os\ntry:\n os.mkdir('/lib')\nexcept OSError:\n pass")
-        mpremote(args.port, "fs", "cp", "-r", str(vendor / "umodbus"), ":/lib/", timeout=120)
+        mpremote(port, "exec", "import os\ntry:\n os.mkdir('/lib')\nexcept OSError:\n pass")
+        mpremote(port, "fs", "cp", "-r", str(vendor / "umodbus"), ":/lib/", timeout=120)
 
         scratch = staging / "verification"
         scratch.mkdir()
         for source in vendor_files:
-            rel = str(source.relative_to(vendor / "umodbus")).replace(os.sep, "/")
-            verify_copy(args.port, source, "lib/umodbus/" + rel, scratch)
+            rel = "lib/umodbus/" + str(source.relative_to(vendor / "umodbus")).replace(os.sep, "/")
+            verify_copy(port, source, rel, scratch)
+            records[rel] = {
+                "sha256": file_sha(source), "size": source.stat().st_size,
+                "source": f"{MODBUS_ARCHIVE_NAME} (SHA256-pinned)",
+            }
 
         # Modules first, boot entry point LAST: avoids a partially installed app.
         for source, target in files:
             if target == "main.py":
                 continue
-            mpremote(args.port, "fs", "cp", str(source), ":/" + target, timeout=90)
-            verify_copy(args.port, source, target, scratch)
+            mpremote(port, "fs", "cp", str(source), ":/" + target, timeout=90)
+            verify_copy(port, source, target, scratch)
+            records[target] = file_record(source)
         main_source = next(source for source, target in files if target == "main.py")
-        mpremote(args.port, "fs", "cp", str(main_source), ":/main.py", timeout=90)
-        verify_copy(args.port, main_source, "main.py", scratch)
+        mpremote(port, "fs", "cp", str(main_source), ":/main.py", timeout=90)
+        verify_copy(port, main_source, "main.py", scratch)
+        records["main.py"] = file_record(main_source)
 
-    postcheck = mpremote(
-        args.port, "exec",
-        "from umodbus.serial import ModbusRTU\n"
-        "import breakout_bme68x, pimoroni_i2c\n"
-        "import pico_modbus_patch, bme688_sensor, environmental_reading\n"
-        "print('WS_PROVISION_VERIFY_OK')",
-    )
-    if "WS_PROVISION_VERIFY_OK" not in postcheck:
-        raise ProvisionError("Post-install import verification did not pass")
+        postcheck = mpremote(
+            port, "exec",
+            "from umodbus.serial import ModbusRTU\n"
+            "import breakout_bme68x, pimoroni_i2c\n"
+            "import pico_modbus_patch, bme688_sensor, dht11_sensor, environmental_reading\n"
+            "import bme688_modbus_extension\n"
+            "print('WS_PROVISION_VERIFY_OK')",
+        )
+        if "WS_PROVISION_VERIFY_OK" not in postcheck:
+            raise ProvisionError("Post-install import verification did not pass")
+
+        manifest = {
+            "schema": MANIFEST_SCHEMA,
+            "kind": "deploy",
+            "deployed_at_utc": utc_now(),
+            "host": platform.node(),
+            "profile": args.profile,
+            "main_override": bool(args.main),
+            "git": git_info,
+            "umodbus": RELEASE,
+            "expected_uf2": FIRMWARE_NAME,
+            "files": records,
+            "pushes": [],
+        }
+        write_manifest(port, manifest, scratch)
+
+    append_log({
+        "event": "deploy", "at_utc": manifest["deployed_at_utc"], "port": port,
+        "profile": args.profile, "git": git_info,
+        "backup": str(backup_path) if backup_path else None,
+        "files": {name: rec["sha256"] for name, rec in records.items()},
+    })
     print("Deployment verified: file SHA256 read-back AND on-device imports OK.")
+    print(f"Deployment recorded in /{MANIFEST_NAME} on the Pico and in {LOG_FILE}.")
+    if not git_info["clean"]:
+        print("WARNING: some deployed files are not committed; the record holds their SHA-256, "
+              "but the Git commit alone does not reproduce this deployment.")
+
+    stale = sorted(
+        name for name, _ in previous_files
+        if name not in records and name != MANIFEST_NAME
+    )
+    if stale:
+        print("INFO: files on the Pico that this deployment does not manage (left untouched):")
+        for name in stale:
+            print(f"  /{name}")
+
     if args.reset:
         print("Resetting Pico; main.py will start if the required wiring is ready.")
-        mpremote(args.port, "reset")
+        mpremote(port, "reset")
     else:
         print("No reset performed; reconnect/reset Pico when sensors and RS-485 wiring are ready.")
 
 
-def bootstrap_mpremote() -> None:
-    """The interactive one-command workflow installs its host dependency if needed."""
-    try:
-        ensure_mpremote()
-        return
-    except ProvisionError:
-        print("mpremote not found. Installing the USB provisioning dependency...")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "mpremote"],
-            check=False,
-        )
-        if result.returncode:
-            raise ProvisionError(
-                "Failed to install mpremote. Install it once with: "
-                "python -m pip install mpremote"
-            )
-        ensure_mpremote()
+def push(args: argparse.Namespace) -> None:
+    """Copy individual files to the Pico root, with backup, read-back and a record."""
+    sources = [Path(item).expanduser().resolve() for item in args.files]
+    if args.as_name and len(sources) != 1:
+        raise ProvisionError("--as can only be used with a single file")
+    targets = []
+    for source in sources:
+        if not source.is_file():
+            raise ProvisionError(f"File not found: {source}")
+        name = args.as_name or source.name
+        if "/" in name or "\\" in name or name in ("", ".", "..", MANIFEST_NAME):
+            raise ProvisionError(f"Invalid Pico file name: {name!r}")
+        targets.append((source, name))
+    if len({name for _, name in targets}) != len(targets):
+        raise ProvisionError("Two files would be written to the same Pico path")
 
+    git_info = git_snapshot(sources)
+    print(describe_git(git_info))
+    for source, name in targets:
+        print(f"  {repo_relative(source) or source} -> /{name}")
+    if not args.apply:
+        print("DRY RUN: add --apply --port COMx to copy.")
+        return
+
+    port = require_port(args.port)
+    ensure_mpremote()
+    doctor(port)
+    manifest = read_manifest(port)
+
+    names = [name for _, name in targets]
+    existing = [n for n, _ in device_files(port) if n in names]
+    backup_path = None
+    if existing:
+        backup_path = backup(port, default_backup_path("-push"), only=existing)
+
+    pushed_at = utc_now()
+    with tempfile.TemporaryDirectory(prefix="weather-station-push-") as td:
+        scratch = Path(td)
+        # A new main.py goes last, so its imports are already in place.
+        for source, name in sorted(targets, key=lambda item: item[1] == "main.py"):
+            mpremote(port, "fs", "cp", str(source), ":/" + name, timeout=90)
+            verify_copy(port, source, name, scratch)
+
+        if manifest is None:
+            print(f"INFO: no /{MANIFEST_NAME} on the Pico yet; starting a new record.")
+            manifest = {
+                "schema": MANIFEST_SCHEMA, "kind": "push", "deployed_at_utc": None,
+                "host": platform.node(), "profile": None, "main_override": False,
+                "git": None, "umodbus": None, "expected_uf2": FIRMWARE_NAME,
+                "files": {}, "pushes": [],
+            }
+        for source, name in targets:
+            record = file_record(source)
+            record["pushed_at_utc"] = pushed_at
+            manifest["files"][name] = record
+        manifest["pushes"].append({
+            "at_utc": pushed_at, "host": platform.node(), "git": git_info,
+            "files": {name: manifest["files"][name]["sha256"] for _, name in targets},
+            "note": args.note,
+        })
+        write_manifest(port, manifest, scratch)
+
+    append_log({
+        "event": "push", "at_utc": pushed_at, "port": port, "git": git_info,
+        "backup": str(backup_path) if backup_path else None, "note": args.note,
+        "files": {name: file_sha(source) for source, name in targets},
+    })
+    print(f"Push verified (SHA256 read-back) and recorded in /{MANIFEST_NAME}.")
+    if args.reset:
+        mpremote(port, "reset")
+        print("Pico reset.")
+    else:
+        print("No reset performed.")
+
+
+def status(args: argparse.Namespace) -> int:
+    """Compare the Pico with its deployment record and with the repository."""
+    port = require_port(args.port)
+    ensure_mpremote()
+    manifest = read_manifest(port)
+    on_device = [name for name, _ in device_files(port)]
+
+    if manifest is None:
+        print(f"No /{MANIFEST_NAME} on the Pico: its files were not deployed by this tool "
+              "(or were deployed before deployment records existed).")
+        print("Files on the Pico:")
+        for name in on_device:
+            print(f"  /{name}")
+        return 1
+
+    git = manifest.get("git") or {}
+    print(f"Deployed:  {manifest.get('deployed_at_utc')} from {manifest.get('host')} "
+          f"| profile {manifest.get('profile')}"
+          + (" (main.py override)" if manifest.get("main_override") else ""))
+    if git:
+        print(f"Commit:    {git.get('commit')} on {git.get('branch')} "
+              + ("(clean)" if git.get("clean") else "(had uncommitted files)"))
+    for item in manifest.get("pushes", []):
+        print(f"Pushed:    {item['at_utc']} " + ", ".join(item["files"])
+              + (f" — {item['note']}" if item.get("note") else ""))
+
+    recorded = manifest.get("files", {})
+    present = [name for name in recorded if name in on_device]
+    digests = device_sha256(port, present)
+    in_sync = True
+    print("\nPico vs deployment record:")
+    for name, record in sorted(recorded.items()):
+        if name not in on_device:
+            state, in_sync = "MISSING on the Pico", False
+        elif digests[name] != record["sha256"]:
+            state, in_sync = "CHANGED since recorded (edited by hand?)", False
+        else:
+            state = "ok"
+        print(f"  /{name:40s} {state}")
+    unmanaged = sorted(set(on_device) - set(recorded) - {MANIFEST_NAME})
+    for name in unmanaged:
+        print(f"  /{name:40s} not in the record")
+
+    print("\nRecord vs current repository:")
+    behind = False
+    for name, record in sorted(recorded.items()):
+        if name.startswith("lib/umodbus/"):
+            continue  # pinned by the dependency lock, not by a repository file
+        source = Path(record["source"])
+        if not source.is_absolute():
+            source = REPO / source
+        if not source.is_file():
+            print(f"  /{name:40s} source not found: {record['source']}")
+            behind = True
+        elif file_sha(source) != record["sha256"]:
+            print(f"  /{name:40s} repository copy differs: {record['source']}")
+            behind = True
+    if not behind:
+        print("  every recorded source matches the repository working tree")
+
+    print("\nRESULT: " + ("Pico matches its deployment record." if in_sync
+                          else "DRIFT — the Pico does not match its deployment record."))
+    return 0 if in_sync else 1
+
+
+# ----------------------------------------------------------------------
+# Interactive one-command installer
+# ----------------------------------------------------------------------
 
 def interactive_port() -> str:
     """Show actual serial ports and let the operator select a target."""
@@ -492,22 +943,47 @@ def interactive_port() -> str:
     if not ports:
         print("  No serial ports detected. Plug the Pico in via USB and retry.")
         raise ProvisionError("No serial port detected")
+    picos = [port for port in ports if getattr(port, "vid", None) == RASPBERRY_PI_USB_VID]
     for index, port in enumerate(ports, 1):
         details = port.description or "Unknown device"
-        print(f"  [{index}] {port.device} — {details}")
-    print("\nSelect the Pico by number, or type its COM port.")
+        marker = "  <- Raspberry Pi device" if port in picos else ""
+        print(f"  [{index}] {port.device} — {details}{marker}")
+    default = picos[0].device if len(picos) == 1 else None
+    if default:
+        print(f"\nOne Raspberry Pi device found: {default}. Press Enter to use it.")
+    else:
+        print("\nSelect the Pico by number, or type its COM port.")
     while True:
-        answer = input("Pico port [1]: ").strip()
-        if not answer:
-            return ports[0].device
+        answer = input(f"Pico port [{default}]: " if default else "Pico port: ").strip()
+        if not answer and default:
+            return default
         if answer.isdigit():
             selected = int(answer)
             if 1 <= selected <= len(ports):
                 return ports[selected - 1].device
         for port in ports:
-            if answer.upper() == port.device.upper():
+            if answer and answer.upper() == port.device.upper():
                 return port.device
         print("Invalid selection. Choose a listed number or COM port.")
+
+
+def interactive_profile() -> str:
+    """No default: the profile must match how the Pico is wired."""
+    names = list(PROFILES)
+    print("\nWhich wiring is this Pico connected to?")
+    for index, name in enumerate(names, 1):
+        print(f"  [{index}] {name}: {PROFILES[name]['summary']}")
+    while True:
+        answer = input("Profile (number or name): ").strip().lower()
+        if answer.isdigit() and 1 <= int(answer) <= len(names):
+            return names[int(answer) - 1]
+        if answer in PROFILES:
+            return answer
+        print("Choose one of the listed profiles. There is no default.")
+
+
+def ask_yes(question: str) -> bool:
+    return input(f"{question} [y/N]: ").strip().lower() in ("y", "yes", "s", "si", "sí")
 
 
 def interactive_install() -> int:
@@ -517,9 +993,13 @@ def interactive_install() -> int:
     print("=" * 55)
     bootstrap_mpremote()
     port = interactive_port()
-    print(f"\nInstalling to {port} using RS-485 (P4) profile.")
+    profile = interactive_profile()
+    print(f"\nInstalling to {port} using the '{profile}' profile.")
     print("The installed MicroPython UF2 will NOT be flashed or erased.")
-    args = parser().parse_args(["deploy", "--port", port, "--apply"])
+    args = parser().parse_args(["deploy", "--port", port, "--profile", profile, "--apply"])
+    args.confirm_empty = lambda: ask_yes(
+        "The Pico has no files, so there is nothing to back up. Is this a new Pico? Continue"
+    )
     deploy(args)
     print("\nSUCCESS — Pico application and umodbus are installed and verified.")
     print("UF2 archive retained on your PC. No weather-core setup is necessary.")
@@ -530,24 +1010,41 @@ def interactive_install() -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Pico 2 provisioning for Weather Station")
     sub = p.add_subparsers(dest="command", required=True)
-    for command in ("doctor", "backup", "deploy", "firmware"):
-        s = sub.add_parser(command)
-        if command != "firmware":
-            s.add_argument("--port", default="auto", help="USB COM port, e.g. COM5 or /dev/ttyACM0")
-        else:
-            s.add_argument("--offline", action="store_true", help="Verify local UF2 cache without network")
-        if command == "backup":
-            s.add_argument("--destination", type=Path)
-        if command == "deploy":
-            s.add_argument("--profile", choices=("rs485", "uart"), default="rs485")
-            s.add_argument("--main", type=Path, help="Use exact local main.py instead of stored profile")
-            s.add_argument("--include-tests", action="store_true")
-            s.add_argument("--apply", action="store_true", help="Actually write to the Pico")
-            s.add_argument("--skip-backup", action="store_true", help="Only for a known empty new board")
-            s.add_argument("--backup-dir", type=Path)
-            s.add_argument("--offline", action="store_true", help="Only use cached sdist")
-            s.add_argument("--archive", type=Path, help="Local SHA256-verified 2.3.7 tar.gz")
-            s.add_argument("--reset", action="store_true", help="Run main.py after deployment")
+    port_help = "USB serial port of the Pico, e.g. COM12 or /dev/ttyACM0 (required; 'auto' is refused)"
+
+    s = sub.add_parser("doctor", help="Check the Pico model and drivers")
+    s.add_argument("--port", help=port_help)
+
+    s = sub.add_parser("firmware", help="Cache the pinned UF2 on the PC (never flashed)")
+    s.add_argument("--offline", action="store_true", help="Verify local UF2 cache without network")
+
+    s = sub.add_parser("backup", help="Copy every Pico file to the PC")
+    s.add_argument("--port", help=port_help)
+    s.add_argument("--destination", type=Path)
+
+    s = sub.add_parser("deploy", help="Install a firmware profile (dry run without --apply)")
+    s.add_argument("--port", help=port_help)
+    s.add_argument("--profile", choices=tuple(PROFILES), required=True,
+                   help="; ".join(f"{name}: {info['summary']}" for name, info in PROFILES.items()))
+    s.add_argument("--main", type=Path, help="Use exact local main.py instead of the profile's")
+    s.add_argument("--include-tests", action="store_true")
+    s.add_argument("--apply", action="store_true", help="Actually write to the Pico")
+    s.add_argument("--skip-backup", action="store_true", help="Only for a known empty new board")
+    s.add_argument("--backup-dir", type=Path)
+    s.add_argument("--offline", action="store_true", help="Only use cached UF2/sdist")
+    s.add_argument("--archive", type=Path, help="Local SHA256-verified micropython-modbus tar.gz")
+    s.add_argument("--reset", action="store_true", help="Run main.py after deployment")
+
+    s = sub.add_parser("push", help="Copy individual files to the Pico root, recorded and verified")
+    s.add_argument("files", nargs="+", help="Local files, e.g. experiments/.../script.py")
+    s.add_argument("--port", help=port_help)
+    s.add_argument("--as", dest="as_name", help="Name on the Pico for a single file, e.g. main.py")
+    s.add_argument("--note", help="Short reason stored in the record, e.g. 'P4 long run test'")
+    s.add_argument("--apply", action="store_true", help="Actually write to the Pico")
+    s.add_argument("--reset", action="store_true", help="Reset the Pico afterwards")
+
+    s = sub.add_parser("status", help="Compare the Pico with its deployment record and the repo")
+    s.add_argument("--port", help=port_help)
     return p
 
 
@@ -560,15 +1057,20 @@ def main(argv: list[str] | None = None) -> int:
         args = parser().parse_args(argv)
         if args.command == "doctor":
             ensure_mpremote()
-            doctor(args.port)
+            doctor(require_port(args.port))
         elif args.command == "firmware":
             download_firmware(args.offline)
         elif args.command == "backup":
+            port = require_port(args.port)
             ensure_mpremote()
             path = args.destination or default_backup_path()
             if path.exists():
                 raise ProvisionError(f"Backup directory exists: {path}")
-            backup(args.port, path)
+            backup(port, path)
+        elif args.command == "push":
+            push(args)
+        elif args.command == "status":
+            return status(args)
         else:
             deploy(args)
     except (ProvisionError, OSError, ValueError, KeyError, EOFError, KeyboardInterrupt) as exc:

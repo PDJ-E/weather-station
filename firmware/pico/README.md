@@ -7,7 +7,6 @@ firmware/pico/
 ├── main.py                        # P4 RS-485 application (formerly bme688_modbus_rs485_pico.py)
 ├── bme688_modbus_extension.py
 ├── bme688_sensor.py
-├── common_interface_test.py       # optional active sensor test (source in tests/)
 ├── dht11_sensor.py
 ├── environmental_reading.py
 ├── pico_modbus_patch.py

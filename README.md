@@ -47,7 +47,7 @@ Rather than treating these as isolated exercises, the station provides a single 
 
 ## Architecture
 
-\`\`\`mermaid
+```mermaid
 flowchart TD
     PI5["Raspberry Pi 5<br/>weather-core"]
     DB[("PostgreSQL")]
@@ -65,9 +65,9 @@ flowchart TD
     PICO --> SENSORS
     PI5 -.-> ZERO
     PICO -.-> OUTDOOR
-\`\`\`
+```
 
-The Raspberry Pi 5 (\`weather-core\`) is the central processing and persistence node. The Pico 2 handles hardware-facing sensing, maintains a Modbus RTU register map, and communicates with the Pi through a differential RS-485 transceiver. The P4 bench implementation uses SparkFun RS-485 breakouts, a 115200 8N1 link, and explicit half-duplex direction control.
+The Raspberry Pi 5 (`weather-core`) is the central processing and persistence node. The Pico 2 handles hardware-facing sensing, maintains a Modbus RTU register map, and communicates with the Pi through a differential RS-485 transceiver. The P4 bench implementation uses SparkFun RS-485 breakouts, a 115200 8N1 link, and explicit half-duplex direction control.
 
 Development progressed from direct UART and JSON telemetry (P1), to Modbus RTU over UART (P2/P3), to a **working RS-485 bench link (P4)**. Outdoor field wiring, multi-node operation, and long-term weather exposure are separate validation targets; the RS-485 link should not be mistaken for a commissioned outdoor bus.
 
@@ -77,19 +77,19 @@ The mechanical station is being fabricated in parallel with the electronics. The
 
 ## Telemetry and Device Communication
 
-**Modbus RTU is the currently implemented telemetry and control protocol.** P2 established the frozen register-map v1.0 for the DHT11; P3 extended the environmental telemetry to **v1.1 (\`0x0101\`)** for the BME688. The same application contract is exercised over the P4 RS-485 physical link.
+**Modbus RTU is the currently implemented telemetry and control protocol.** P2 established the frozen register-map v1.0 for the DHT11; P3 extended the environmental telemetry to **v1.1 (`0x0101`)** for the BME688. The same application contract is exercised over the P4 RS-485 physical link.
 
-The main Pico application is maintained at [\`firmware/pico/main.py\`](firmware/pico/main.py). The Pi-side P4 [RS-485 Modbus client](experiments/rs485/rs485_modbus_client.py) includes bounded retries, reception resynchronization, request/response checks, a 5 ms inter-frame gap, and transport counters. Its RS-485 behavior was characterized in dedicated turnaround diagnostics under idle and CPU/I/O-loaded conditions. The remaining bus-level concerns are tracked in [\`docs/next_steps.md\`](docs/next_steps.md).
+The main Pico application is maintained at [`firmware/pico/main.py`](firmware/pico/main.py). The Pi-side P4 [RS-485 Modbus client](experiments/rs485/rs485_modbus_client.py) includes bounded retries, reception resynchronization, request/response checks, a 5 ms inter-frame gap, and transport counters. Its RS-485 behavior was characterized in dedicated turnaround diagnostics under idle and CPU/I/O-loaded conditions. The remaining bus-level concerns are tracked in [`docs/next_steps.md`](docs/next_steps.md).
 
 **ATP (Agnostic Telemetry Protocol)** is a separate, longer-term protocol effort motivated by the limitations of synchronous Modbus polling. The intended design includes device identity, heartbeats, prioritized faults, asynchronous events, and request/response correlation. A conceptual frame is:
 
-\`\`\`text
+```text
 [dest_id][src_id][msg_type][seq][payload][checksum]
-\`\`\`
+```
 
 ATP is **not** described here as an installed replacement for the current Modbus/RS-485 implementation. Its future implementation and use in Weather Station will be documented when supported by completed code and integration tests.
 
-See the [frozen P2 register-map specification](docs/phase_2/p2_modbus_register_map_v1.md), the [P3 environmental sensor mechanics specification](docs/phase_3/p3_07_bme688_removable_sensor_cartridge_spec.md), and the P4 implementation under [\`experiments/rs485/\`](experiments/rs485/).
+See the [frozen P2 register-map specification](docs/phase_2/p2_modbus_register_map_v1.md), the [P3 environmental sensor mechanics specification](docs/phase_3/p3_07_bme688_removable_sensor_cartridge_spec.md), and the P4 implementation under [`experiments/rs485/`](experiments/rs485/).
 
 ---
 
@@ -121,7 +121,7 @@ Some components — particularly ATP, event scheduling, device coordination, and
 
 | Component | Current role / state |
 |---|---|
-| Raspberry Pi 5 — \`weather-core\` | Central Linux node; validated sensor telemetry acquisition and PostgreSQL persistence |
+| Raspberry Pi 5 — `weather-core` | Central Linux node; validated sensor telemetry acquisition and PostgreSQL persistence |
 | Raspberry Pi Pico 2 (RP2350) | Sensor node running Pimoroni MicroPython, BME688/DHT11 drivers, Modbus RTU and RS-485 application firmware |
 | PostgreSQL | Validated persistence for environmental measurements, sample sequences, and experimental run metadata |
 | RS-485 | Validated with Pi 5 and Pico 2 on a bench; outdoor bus engineering and multi-node behavior remain open |
@@ -170,7 +170,7 @@ Current engineering areas include:
 - tipping-bucket rain gauge mechanics and eventual calibration;
 - enclosure protection, strain relief, 24 V distribution, cable routing, and RS-485 bus bias/termination before outdoor deployment.
 
-Fusion 360 is the CAD design environment. The repository reserves [\`hardware/cad/source/\`](hardware/cad/source/) for editable CAD and [\`hardware/cad/exports/\`](hardware/cad/exports/) for manufacturing exports, **but these directories do not yet contain the final CAD/STL artifacts in \`main\`**. Their absence should not be confused with an absence of physical design or printing activity; manufacturing artifacts and revision evidence still need to be published.
+Fusion 360 is the CAD design environment. The repository reserves [`hardware/cad/source/`](hardware/cad/source/) for editable CAD and [`hardware/cad/exports/`](hardware/cad/exports/) for manufacturing exports, **but these directories do not yet contain the final CAD/STL artifacts in `main`**. Their absence should not be confused with an absence of physical design or printing activity; manufacturing artifacts and revision evidence still need to be published.
 
 The intended separation is editable design source, versioned printable exports, and printer-specific slicer/G-code files (normally kept outside Git).
 
@@ -178,7 +178,7 @@ The intended separation is editable design source, versioned printable exports, 
 
 ## Repository Structure
 
-\`\`\`text
+```text
 weather-station/
 ├── backend/
 │   └── database/               # Experimental PostgreSQL schemas and queries
@@ -206,40 +206,40 @@ weather-station/
 │   └── picoctl.py             # Interactive one-command Pico provisioning
 ├── CHANGELOG.md
 └── README.md
-\`\`\`
+```
 
 | Directory | Purpose |
 |---|---|
-| \`firmware/pico/\` | Canonical Pico 2 application, UART alternative, sensor drivers, and \`dependencies.lock.json\` |
-| \`tools/\` | Host-side provisioning and development utilities |
-| \`tests/\` | Automated tests, including installer regressions |
-| \`experiments/\` | Historical experiments, field-bus diagnostics, end-to-end runners, and retained validation evidence |
-| \`backend/database/\` | Test and prototype database models and SQL |
-| \`docs/\` | Engineering specifications, installation procedures, phase evidence, and deferred decisions |
-| \`hardware/cad/\` | Reserved source and export destinations for publishable manufacturing revisions |
-| \`firmware/zero/\`, \`infrastructure/\` | Expansion and deployment scaffolding; not evidence of completed runtime services |
+| `firmware/pico/` | Canonical Pico 2 application, UART alternative, sensor drivers, and `dependencies.lock.json` |
+| `tools/` | Host-side provisioning and development utilities |
+| `tests/` | Automated tests, including installer regressions |
+| `experiments/` | Historical experiments, field-bus diagnostics, end-to-end runners, and retained validation evidence |
+| `backend/database/` | Test and prototype database models and SQL |
+| `docs/` | Engineering specifications, installation procedures, phase evidence, and deferred decisions |
+| `hardware/cad/` | Reserved source and export destinations for publishable manufacturing revisions |
+| `firmware/zero/`, `infrastructure/` | Expansion and deployment scaffolding; not evidence of completed runtime services |
 
 ### Pico 2 provisioning
 
 A replacement Pico 2 can be provisioned from the repository root with one command:
 
-\`\`\`powershell
+```powershell
 python tools/picoctl.py
-\`\`\`
+```
 
-The interactive installer lists serial ports, lets the operator select the device, backs up its filesystem, installs pinned \`micropython-modbus\` and the application modules, and verifies transferred files and imports. It also preserves a verified download of the known-good Pimoroni MicroPython UF2 **on the host PC**; it does not flash the UF2.
+The interactive installer lists serial ports, lets the operator select the device, backs up its filesystem, installs pinned `micropython-modbus` and the application modules, and verifies transferred files and imports. It also preserves a verified download of the known-good Pimoroni MicroPython UF2 **on the host PC**; it does not flash the UF2.
 
-This workflow was validated on a physical Pico 2 (COM12) with a verified 15-file backup and passed post-install integrity checks. Dependency versions and hashes are maintained in [\`firmware/pico/dependencies.lock.json\`](firmware/pico/dependencies.lock.json). The [provisioning guide](docs/pico_provisioning.md) contains diagnostic and advanced usage details.
+This workflow was validated on a physical Pico 2 (COM12) with a verified 15-file backup and passed post-install integrity checks. Dependency versions and hashes are maintained in [`firmware/pico/dependencies.lock.json`](firmware/pico/dependencies.lock.json). The [provisioning guide](docs/pico_provisioning.md) contains diagnostic and advanced usage details.
 
 ---
 
 ## Development Method
 
-The project uses incremental validation rather than treating a functioning prototype as a completed field installation. Experimental results are retained in \`experiments/\`; proven device code is promoted into \`firmware/\`; mechanical requirements, reproducible configurations, and deferred engineering decisions are documented alongside their evidence.
+The project uses incremental validation rather than treating a functioning prototype as a completed field installation. Experimental results are retained in `experiments/`; proven device code is promoted into `firmware/`; mechanical requirements, reproducible configurations, and deferred engineering decisions are documented alongside their evidence.
 
 P1 validated direct UART, P2 validated the Modbus control contract, P3 validated BME688 telemetry and database persistence, and P4 established the half-duplex RS-485 bench implementation and its timing requirements. Physical manufacturing can proceed concurrently, while field-bus commissioning, sensor calibration, and long-term outdoor operation remain separate acceptance stages.
 
-For the active technical debt and its test evidence, see [\`docs/next_steps.md\`](docs/next_steps.md).
+For the active technical debt and its test evidence, see [`docs/next_steps.md`](docs/next_steps.md).
 
 ---
 
@@ -251,7 +251,7 @@ For the active technical debt and its test evidence, see [\`docs/next_steps.md\`
 |---|---|---|
 | **P1 — Pi↔Pico UART + DHT11** | Complete | 23 h 25 min continuous run; validated ingestion, liveness, and reconnection |
 | **P2 — Modbus RTU contract** | Complete | Frozen v1.0 register map and 19/19 integration tests |
-| **P3 — BME688 environmental acquisition** | Complete | v1.1 (\`0x0101\`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
+| **P3 — BME688 environmental acquisition** | Complete | v1.1 (`0x0101`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
 | **P4 — RS-485 communication** | Bench-validated; integration work remains | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
 | **Pico 2 provisioning** | Complete | One-command installer, pinned UF2/dependencies, hardware-proven backup and upload, 23 automated tests |
 | **Outdoor mechanical fabrication** | In progress | Final printed parts are now being produced; assembly, qualification and revision-controlled CAD/STL publication remain open |
@@ -279,7 +279,7 @@ The phase labels below follow the validated P1–P4 milestones and separate mech
 | Production services | Unattended ingestion, device management, API, dashboard and monitoring | Future |
 | Expansion | Camera node, additional devices, external services, ATP integration and analytics | Future |
 
-Deferred technical requirements and their triggers are tracked in [\`docs/next_steps.md\`](docs/next_steps.md). A dedicated consolidated roadmap file has not yet been published in this repository.
+Deferred technical requirements and their triggers are tracked in [`docs/next_steps.md`](docs/next_steps.md). A dedicated consolidated roadmap file has not yet been published in this repository.
 
 ---
 

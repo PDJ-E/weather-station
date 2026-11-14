@@ -170,7 +170,7 @@ def source_files(profile: str, include_tests: bool, main_override: Path | None) 
     files = [(COMMON / name, name) for name in CORE]
     files.append((COMMON / "bme688_modbus_extension.py", "bme688_modbus_extension.py"))
     if include_tests:
-        files.append((PICO / "tests" / "common_interface_test.py", "common_interface_test.py"))
+        files.append((PICO / "common_interface_test.py", "common_interface_test.py"))
     entry = main_override.expanduser().resolve() if main_override else (PICO / "main.py" if profile == "rs485" else PICO / "profiles" / "uart" / "main.py")
     files.append((entry, "main.py"))
     missing = [str(source) for source, _ in files if not source.is_file()]

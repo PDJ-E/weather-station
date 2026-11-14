@@ -165,6 +165,24 @@ class PicoctlTests(unittest.TestCase):
                 with self.assertRaises(picoctl.ProvisionError):
                     picoctl.backup("COM12", Path(tmp) / "backup")
 
+    def test_doctor_accepts_missing_modbus_before_install(self):
+        output = ("WS_PLATFORM: rp2\n"
+                  "WS_MACHINE: Raspberry Pi Pico2 with RP2350\n"
+                  "WS_IMPORT: pimoroni_i2c OK\n"
+                  "WS_IMPORT: breakout_bme68x OK\n"
+                  "WS_IMPORT: umodbus MISSING ImportError('not installed')\n")
+        with mock.patch.object(picoctl, "mpremote", return_value=output):
+            picoctl.doctor("COM12")
+
+    def test_doctor_rejects_other_rp2_hardware(self):
+        output = ("WS_PLATFORM: rp2\n"
+                  "WS_MACHINE: Raspberry Pi Pico with RP2040\n"
+                  "WS_IMPORT: pimoroni_i2c OK\n"
+                  "WS_IMPORT: breakout_bme68x OK\n")
+        with mock.patch.object(picoctl, "mpremote", return_value=output):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.doctor("COM12")
+
     def test_one_command_wizard_selects_port_and_applies(self):
         with mock.patch.object(picoctl, "bootstrap_mpremote"), mock.patch.object(
             picoctl, "interactive_port", return_value="COM12"

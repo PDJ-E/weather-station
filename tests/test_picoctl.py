@@ -21,13 +21,11 @@ class PicoctlTests(unittest.TestCase):
     def test_dry_run_never_connects_to_device(self):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
-            common = pico / "common"
+            common = pico
             common.mkdir()
             for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
                 (common / name).write_text("# fixture", encoding="utf-8")
-            app = pico / "profiles" / "rs485"
-            app.mkdir(parents=True)
-            (app / "main.py").write_text("# fixture", encoding="utf-8")
+            (pico / "main.py").write_text("# fixture", encoding="utf-8")
             with mock.patch.object(picoctl, "PICO", pico), mock.patch.object(
                 picoctl, "COMMON", common
             ), mock.patch.object(picoctl, "mpremote", side_effect=AssertionError):
@@ -60,10 +58,24 @@ class PicoctlTests(unittest.TestCase):
             with self.assertRaises(picoctl.ProvisionError):
                 picoctl.acquire_modbus(True, archive)
 
+    def test_rs485_uses_pico_root_as_main(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pico = Path(tmp)
+            common = pico
+            common.mkdir()
+            for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
+                (common / name).write_text("# fixture", encoding="utf-8")
+            (pico / "main.py").write_text("# P4 fixture", encoding="utf-8")
+            with mock.patch.object(picoctl, "PICO", pico), mock.patch.object(
+                picoctl, "COMMON", common
+            ):
+                files = picoctl.source_files("rs485", False, None)
+                self.assertEqual(files[-1], (pico / "main.py", "main.py"))
+
     def test_main_is_last_source_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
-            common = pico / "common"
+            common = pico
             common.mkdir()
             for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
                 (common / name).write_text("# fixture", encoding="utf-8")

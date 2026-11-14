@@ -29,14 +29,14 @@ Backups go into .pico-backups/<UTC timestamp> and include all files visible to M
 
 | Profile | Repo entry point | Transport | Pins |
 | --- | --- | --- | --- |
-| rs485 (default) | firmware/pico/profiles/rs485/main.py | SparkFun RS-485 half-duplex (P4) | UART0 GP0/GP1; RTS GP6 |
+| rs485 (default) | firmware/pico/main.py | SparkFun RS-485 half-duplex (P4) | UART0 GP0/GP1; RTS GP6 |
 | uart | firmware/pico/profiles/uart/main.py | Direct TTL UART (P3) | UART0 GP0/GP1 |
 
-Both profiles use Modbus 115200 8N1, Unit ID 1; BME688 on I2C1 GP2 (SDA) / GP3 (SCL) at 0x76; and DHT11 on GP15. The P4 profile exposes register map v1.1 (0x0101), including registers 200–216. The entry point files were copied **unmodified** from the P3 and P4 experiment sources.
+Both profiles use Modbus 115200 8N1, Unit ID 1; BME688 on I2C1 GP2 (SDA) / GP3 (SCL) at 0x76; and DHT11 on GP15. The P4 profile exposes register map v1.1 (0x0101), including registers 200–216. The entry point files were copied **unmodified** from the P3 and P4 experiment sources. The primary P4 main.py and all modules to upload are now directly under firmware/pico/, matching the on-device root filesystem.
 
 ## What is installed?
 
-The tool copies environmental_reading.py, dht11_sensor.py, bme688_sensor.py, pico_modbus_patch.py, bme688_modbus_extension.py, and the selected main.py into the Pico filesystem. It installs /lib/umodbus/ from **micropython-modbus==2.3.7**, with the PyPI source archive verified against SHA-256:
+The tool copies environmental_reading.py, dht11_sensor.py, bme688_sensor.py, pico_modbus_patch.py, bme688_modbus_extension.py, and the selected main.py from firmware/pico/ into the Pico filesystem. It installs /lib/umodbus/ from **micropython-modbus==2.3.7**, with the PyPI source archive verified against SHA-256:
 
     b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271
 
@@ -46,7 +46,7 @@ common_interface_test.py is installed only with --include-tests because it execu
 
 ## Existing main.py may be newer
 
-Your old Pico's main.py was **not found** in the GitHub default branch when this feature was created. The checked-in P4 entry point is our best version-controlled baseline, but compare it with the working copy on your PC before using it as a complete replacement. You can substitute the exact known-good local file:
+The user confirmed that the main.py on the working Pico is bme688_modbus_rs485_pico.py. We therefore store that previously working P4 source as the canonical firmware/pico/main.py, without modifying its application logic. If your local copy contains uncommitted adjustments, compare it with this canonical file. You can substitute that local copy using:
 
     python tools/picoctl.py deploy --profile rs485 --main "C:\path\to\main.py" --port COM5 --apply
 

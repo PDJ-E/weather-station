@@ -111,11 +111,11 @@ class PicoctlTests(unittest.TestCase):
         def fake_remote(port, *args, **kwargs):
             self.assertEqual(port, "COM12")
             if args == ("fs", "ls", ":"):
-                return "ls :\\n  4072 bme688_modbus_extension.py\\n  0 lib/\\n  31556 main.py\\n"
+                return "ls :\n  4072 bme688_modbus_extension.py\n  0 lib/\n  31556 main.py\n"
             if args == ("fs", "ls", ":/lib"):
-                return "ls :/lib\\n  0 umodbus/\\n"
+                return "ls :/lib\n  0 umodbus/\n"
             if args == ("fs", "ls", ":/lib/umodbus"):
-                return "ls :/lib/umodbus\\n  5000 serial.py\\n  10 __init__.py\\n"
+                return "ls :/lib/umodbus\n  5000 serial.py\n  10 __init__.py\n"
             raise AssertionError(args)
 
         with mock.patch.object(picoctl, "mpremote", side_effect=fake_remote):
@@ -130,14 +130,14 @@ class PicoctlTests(unittest.TestCase):
             )
 
     def test_empty_backup_is_fail_closed(self):
-        with mock.patch.object(picoctl, "mpremote", return_value="ls :\\n"):
+        with mock.patch.object(picoctl, "mpremote", return_value="ls :\n"):
             with self.assertRaises(picoctl.ProvisionError):
                 picoctl.device_inventory("COM12")
 
     def test_backup_checks_file_size_and_creates_inventory(self):
         def fake_remote(port, *args, **kwargs):
             if args == ("fs", "ls", ":"):
-                return "ls :\\n  4 main.py\\n"
+                return "ls :\n  4 main.py\n"
             if args[:2] == ("fs", "cp"):
                 Path(args[-1]).write_bytes(b"test")
                 return ""
@@ -154,7 +154,7 @@ class PicoctlTests(unittest.TestCase):
     def test_backup_refuses_truncated_copy(self):
         def fake_remote(port, *args, **kwargs):
             if args == ("fs", "ls", ":"):
-                return "ls :\\n  100 main.py\\n"
+                return "ls :\n  100 main.py\n"
             if args[:2] == ("fs", "cp"):
                 Path(args[-1]).write_bytes(b"short")
                 return ""

@@ -107,6 +107,83 @@ class PicoctlTests(unittest.TestCase):
             with self.assertRaises(picoctl.ProvisionError):
                 picoctl.acquire_modbus(True, archive)
 
+    def test_inventory_reads_real_fs_ls_format_including_lib(self):
+        def fake_remote(port, *args, **kwargs):
+            self.assertEqual(port, "COM12")
+            if args == ("fs", "ls", ":"):
+                return "ls :\\n  4072 bme688_modbus_extension.py\\n  0 lib/\\n  31556 main.py\\n"
+            if args == ("fs", "ls", ":/lib"):
+                return "ls :/lib\\n  0 umodbus/\\n"
+            if args == ("fs", "ls", ":/lib/umodbus"):
+                return "ls :/lib/umodbus\\n  5000 serial.py\\n  10 __init__.py\\n"
+            raise AssertionError(args)
+
+        with mock.patch.object(picoctl, "mpremote", side_effect=fake_remote):
+            self.assertEqual(
+                picoctl.device_inventory("COM12"),
+                [
+                    ("bme688_modbus_extension.py", 4072),
+                    ("lib/umodbus/__init__.py", 10),
+                    ("lib/umodbus/serial.py", 5000),
+                    ("main.py", 31556),
+                ],
+            )
+
+    def test_empty_backup_is_fail_closed(self):
+        with mock.patch.object(picoctl, "mpremote", return_value="ls :\\n"):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.device_inventory("COM12")
+
+    def test_backup_checks_file_size_and_creates_inventory(self):
+        def fake_remote(port, *args, **kwargs):
+            if args == ("fs", "ls", ":"):
+                return "ls :\\n  4 main.py\\n"
+            if args[:2] == ("fs", "cp"):
+                Path(args[-1]).write_bytes(b"test")
+                return ""
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "backup"
+            with mock.patch.object(picoctl, "mpremote", side_effect=fake_remote):
+                picoctl.backup("COM12", target)
+            self.assertEqual((target / "main.py").read_bytes(), b"test")
+            manifest = __import__("json").loads((target / "inventory.json").read_text())
+            self.assertEqual(manifest["device_files"], [{"path": "main.py", "size": 4}])
+
+    def test_backup_refuses_truncated_copy(self):
+        def fake_remote(port, *args, **kwargs):
+            if args == ("fs", "ls", ":"):
+                return "ls :\\n  100 main.py\\n"
+            if args[:2] == ("fs", "cp"):
+                Path(args[-1]).write_bytes(b"short")
+                return ""
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(picoctl, "mpremote", side_effect=fake_remote):
+                with self.assertRaises(picoctl.ProvisionError):
+                    picoctl.backup("COM12", Path(tmp) / "backup")
+
+    def test_one_command_wizard_selects_port_and_applies(self):
+        with mock.patch.object(picoctl, "bootstrap_mpremote"), mock.patch.object(
+            picoctl, "interactive_port", return_value="COM12"
+        ), mock.patch.object(picoctl, "deploy") as deployed:
+            self.assertEqual(picoctl.interactive_install(), 0)
+        args = deployed.call_args.args[0]
+        self.assertEqual(args.port, "COM12")
+        self.assertEqual(args.profile, "rs485")
+        self.assertTrue(args.apply)
+        self.assertFalse(args.skip_backup)
+        self.assertFalse(args.reset)
+
+    def test_select_listed_serial_port(self):
+        serial_port = type("Port", (), {"device": "COM12", "description": "Pico 2"})
+        with mock.patch("serial.tools.list_ports.comports", return_value=[serial_port]), mock.patch(
+            "builtins.input", return_value="1"
+        ):
+            self.assertEqual(picoctl.interactive_port(), "COM12")
+
     def test_rs485_uses_pico_root_as_main(self):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)

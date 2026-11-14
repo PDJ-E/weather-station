@@ -170,9 +170,26 @@ Current engineering areas include:
 - tipping-bucket rain gauge mechanics and eventual calibration;
 - enclosure protection, strain relief, 24 V distribution, cable routing, and RS-485 bus bias/termination before outdoor deployment.
 
-Fusion 360 is the CAD design environment. The repository reserves [`hardware/cad/source/`](hardware/cad/source/) for editable CAD and [`hardware/cad/exports/`](hardware/cad/exports/) for manufacturing exports, **but these directories do not yet contain the final CAD/STL artifacts in `main`**. Their absence should not be confused with an absence of physical design or printing activity; manufacturing artifacts and revision evidence still need to be published.
+### Outdoor electronics box
 
-The intended separation is editable design source, versioned printable exports, and printer-specific slicer/G-code files (normally kept outside Git).
+The outdoor node lives in a commercial IP66/IP67 enclosure with a factory gasket; printed parts are not trusted to keep water out. Inside, the electronics are arranged on two levels:
+
+- **Level 1, on the enclosure's original perforated mounting plate:** the PWR-DIST Rev A board (protected 24 V input split into fused branches) and the Pololu 5 V buck converters. The plate was measured and modeled parametrically in Fusion (135 × 185 × 3.05 mm, 5 mm hole pitch), so printed parts are placed on known hole positions.
+- **Level 2, on a printed deck above it:** the Pico 2 in a plug-in socket, the two SparkFun RS-485 breakouts, and the box-temperature sensor. The deck is still being modeled.
+
+The **Pico 2 socket** turns the Pico into a replaceable module without soldering on the board: crimped Dupont housings on the Pico pins route to eight JST receptacles (RS-485, BME688, wind vane, power, box temperature, anemometer, rain gauge, and a wired spare). A stacked 3V3/GND bus ladder distributes power under the Pico, and a hinged frame, pinned with 1.75 mm filament, retains it.
+
+Fastener use is deliberately minimal and drawn from the M2–M3 kit already owned: through-bolts with nuts on the mounting plate, self-tapping M2 screws for small boards, and heat-set inserts on the printed deck.
+
+### CAD and manufacturing files
+
+Fusion 360 is the CAD design environment. The repository separates editable source ([`hardware/cad/source/`](hardware/cad/source/)), versioned printable exports ([`hardware/cad/exports/`](hardware/cad/exports/)), and printer-specific slicer/G-code files, which stay outside Git.
+
+| Release | Contents | State |
+|---|---|---|
+| [`outdoor-box/2026-11-09-box-print-set`](hardware/cad/exports/outdoor-box/2026-11-09-box-print-set/) | STL for the Pico 2 socket v4 (body, cover, retention frame, post blocks, bus ladder tray v2), the buck A/B, Grove and RS-485 holders, and the PWR-DIST spacers, with quantities, fasteners and print settings | Released for printing; fit in the enclosure and outdoor exposure not yet qualified |
+
+The editable Fusion source (`.f3d`/STEP) for these parts has **not yet been published**. The instrument hardware (anemometer, wind vane, rain gauge, radiation shield and mast support) is not part of any published release yet.
 
 ---
 
@@ -198,8 +215,8 @@ weather-station/
 │   └── zero/                   # Reserved for future expansion
 ├── hardware/
 │   └── cad/
-│       ├── source/             # Reserved editable CAD
-│       └── exports/            # Reserved fabrication exports
+│       ├── source/             # Editable CAD (not yet published)
+│       └── exports/            # Versioned STL releases (outdoor-box print set)
 ├── infrastructure/
 ├── tests/
 ├── tools/
@@ -216,7 +233,7 @@ weather-station/
 | `experiments/` | Historical experiments, field-bus diagnostics, end-to-end runners, and retained validation evidence |
 | `backend/database/` | Test and prototype database models and SQL |
 | `docs/` | Engineering specifications, installation procedures, phase evidence, and deferred decisions |
-| `hardware/cad/` | Reserved source and export destinations for publishable manufacturing revisions |
+| `hardware/cad/` | Printable STL releases with part lists and print settings; editable CAD source to follow |
 | `firmware/zero/`, `infrastructure/` | Expansion and deployment scaffolding; not evidence of completed runtime services |
 
 ### Pico 2 provisioning
@@ -254,7 +271,7 @@ For the active technical debt and its test evidence, see [`docs/next_steps.md`](
 | **P3 — BME688 environmental acquisition** | Complete | v1.1 (`0x0101`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
 | **P4 — RS-485 communication** | Bench-validated; integration work remains | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
 | **Pico 2 provisioning** | Complete | One-command installer, pinned UF2/dependencies, hardware-proven backup and upload, 23 automated tests |
-| **Outdoor mechanical fabrication** | In progress | Final printed parts are now being produced; assembly, qualification and revision-controlled CAD/STL publication remain open |
+| **Outdoor mechanical fabrication** | In progress | Outdoor-box print set (Pico 2 socket v4, board holders, PWR-DIST spacers) published as STL on 2026-11-09; level-2 deck, instrument hardware, editable CAD source and assembly qualification remain open |
 | **Outdoor wiring and protection** | Not field-qualified | Power distribution, bus bias/termination, weatherproofing and environmental exposure validation still needed |
 | **Production backend / dashboard** | Planned | Experimental storage is working; unattended production services and user interface are separate work |
 | **Camera node / ATP** | Future | Neither is part of the commissioned station or validated P4 pipeline |
@@ -295,7 +312,7 @@ Deferred technical requirements and their triggers are tracked in [`docs/next_st
 | Communication | UART and Modbus RTU over RS-485 (validated on bench); Wi-Fi and ATP for future expansions |
 | Development environment | Visual Studio Code Remote SSH |
 | Version control | Git and GitHub |
-| Mechanical design | Fusion 360; outdoor part fabrication underway |
+| Mechanical design | Fusion 360; ASA parts printed on an Elegoo Centauri Carbon 2 (single material) |
 | PCB design | Fusion 360, planned |
 | Deployment | Native Linux services initially; Docker to be evaluated later |
 | Visualization | Web dashboard, planned |
@@ -310,7 +327,7 @@ It will include the protocol specification, system architecture, database design
 
 The README is intended to remain the entry point: it explains what the project is, why its architecture exists, what has already been built, and where to find deeper technical material.
 
-Notable changes across the project are tracked in [`CHANGELOG.md`](CHANGELOG.md). The README is an overview rather than a source of detailed hardware-build records; final-part revision files and photographs have not yet been added under `hardware/cad/`.
+Notable changes across the project are tracked in [`CHANGELOG.md`](CHANGELOG.md). The README is an overview rather than a source of detailed hardware-build records: each STL release under `hardware/cad/exports/` carries its own part list, quantities and print notes. Photographs of printed and assembled parts have not yet been added.
 
 ---
 

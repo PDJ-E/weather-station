@@ -73,3 +73,6 @@ htmlcov/
 *.gcode
 .vscode/settings.json
 *.csv
+
+# Local Pico flash backups created by tools/picoctl.py
+.pico-backups/

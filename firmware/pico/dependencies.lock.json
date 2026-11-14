@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "firmware": {
+    "board": "Raspberry Pi Pico 2 (RP2350)",
+    "distribution": "Pimoroni MicroPython",
+    "version": "1.29.0",
+    "filename": "rpi_pico2-v1.29.0-micropython.uf2",
+    "url": "https://github.com/pimoroni/pimoroni-pico-rp2350/releases/download/v1.29.0/rpi_pico2-v1.29.0-micropython.uf2",
+    "sha256": "2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3",
+    "size": 1833472,
+    "action": "download_only"
+  },
+  "modbus": {
+    "package": "micropython-modbus",
+    "version": "2.3.7",
+    "filename": "micropython-modbus-2.3.7.tar.gz",
+    "metadata_url": "https://pypi.org/pypi/micropython-modbus/2.3.7/json",
+    "sha256": "b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271",
+    "device_path": "/lib/umodbus"
+  }
+}

@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  🚧 <strong>Active development — Modbus RTU register map v1 over the Pi-Pico UART link</strong>
+  🚧 <strong>Active development — RS-485 integration and fabrication of final outdoor station parts</strong>
 </p>
 
 ---
 
 ## Overview
 
-Weather Station is a modular platform for collecting, transporting, storing, and eventually visualizing environmental observations.
+Weather Station is a modular environmental monitoring platform combining embedded sensing, a wired RS-485 link, PostgreSQL telemetry, and custom outdoor hardware. The sensor/communication prototypes have progressed through repeatable validation; the project is now also in the fabrication and physical-integration stage.
 
 A Raspberry Pi 5 acts as the central node, coordinating remote devices, persisting telemetry in PostgreSQL, and hosting the future backend services. Raspberry Pi Pico devices handle sensor acquisition close to the physical instruments, while a Raspberry Pi Zero 2 W is reserved for camera control, local processing, and other capabilities that require a Linux-based remote node.
 
@@ -47,59 +47,49 @@ Rather than treating these as isolated exercises, the station provides a single 
 
 ## Architecture
 
-```mermaid
+\`\`\`mermaid
 flowchart TD
-    EXT[External Services]
-
-    PI5[Raspberry Pi 5<br/>Central Node]
-    DB[(PostgreSQL)]
-    BACKEND[Backend Services]
-    DASHBOARD[Dashboard]
-    BUS[RS-485 Field Bus]
-
-    PICO[Raspberry Pi Pico 2<br/>Sensor Node]
-    ZERO[Raspberry Pi Zero 2 W<br/>Camera and Expansion Node]
-
-    SENSORS[Environmental Sensors]
-    CAMERA[Camera and Servos]
-
-    EXT <--> PI5
+    PI5["Raspberry Pi 5<br/>weather-core"]
+    DB[("PostgreSQL")]
+    SERVICES["Backend services and dashboard<br/>(planned)"]
+    RS485["Modbus RTU over RS-485<br/>bench-validated"]
+    PICO["Raspberry Pi Pico 2<br/>environmental node"]
+    SENSORS["DHT11 + BME688<br/>validated"]
+    ZERO["Raspberry Pi Zero 2 W<br/>camera / expansion (planned)"]
+    OUTDOOR["Outdoor instruments and mounts<br/>CAD / final-part printing in progress"]
 
     PI5 --> DB
-    PI5 --> BACKEND
-    PI5 --> DASHBOARD
-    PI5 <--> BUS
-
-    BUS <--> PICO
-    BUS <--> ZERO
-
+    PI5 -.-> SERVICES
+    PI5 <--> RS485
+    RS485 <--> PICO
     PICO --> SENSORS
-    ZERO --> CAMERA
-```
+    PI5 -.-> ZERO
+    PICO -.-> OUTDOOR
+\`\`\`
 
-The Raspberry Pi 5 is responsible for coordination and higher-level processing rather than direct real-time interaction with every sensor. Sensor acquisition is delegated to embedded nodes so that timing-sensitive hardware responsibilities remain separated from the backend and operating system.
+The Raspberry Pi 5 (\`weather-core\`) is the central processing and persistence node. The Pico 2 handles hardware-facing sensing, maintains a Modbus RTU register map, and communicates with the Pi through a differential RS-485 transceiver. The P4 bench implementation uses SparkFun RS-485 breakouts, a 115200 8N1 link, and explicit half-duplex direction control.
 
-RS-485 was selected as the planned physical layer for the outdoor bus because it supports differential signaling, long cable runs, and electrically noisy environments better than short-distance interfaces such as I²C or direct TTL UART.
+Development progressed from direct UART and JSON telemetry (P1), to Modbus RTU over UART (P2/P3), to a **working RS-485 bench link (P4)**. Outdoor field wiring, multi-node operation, and long-term weather exposure are separate validation targets; the RS-485 link should not be mistaken for a commissioned outdoor bus.
 
-UART is being used first as the simplest way to validate communication between the Pi and Pico before introducing RS-485 transceivers and the complete field wiring.
+The mechanical station is being fabricated in parallel with the electronics. The architecture remains modular so the environmental sensor, anemometer, wind vane, tipping-bucket rain gauge, mounting system, and future camera node can be developed and serviced independently.
 
 ---
 
 ## Telemetry and Device Communication
 
-The communication layer is being designed around **ATP (Agnostic Telemetry Protocol)**, a transport-independent telemetry protocol that originated as part of this project.
+**Modbus RTU is the currently implemented telemetry and control protocol.** P2 established the frozen register-map v1.0 for the DHT11; P3 extended the environmental telemetry to **v1.1 (\`0x0101\`)** for the BME688. The same application contract is exercised over the P4 RS-485 physical link.
 
-Most industrial serial protocols, including Modbus RTU, are built around synchronous master-slave polling: a slave device only speaks when the master asks it a question, and there is no native way for it to report something on its own initiative. This works well for periodic register reads, but it does not map cleanly onto conditions this station needs to represent as first-class events — a node detecting an imminent power loss, a sensor failing between poll cycles, or a communication fault that should be reported immediately rather than waiting for the next scheduled query.
+The main Pico application is maintained at [\`firmware/pico/main.py\`](firmware/pico/main.py). The Pi-side P4 [RS-485 Modbus client](experiments/rs485/rs485_modbus_client.py) includes bounded retries, reception resynchronization, request/response checks, a 5 ms inter-frame gap, and transport counters. Its RS-485 behavior was characterized in dedicated turnaround diagnostics under idle and CPU/I/O-loaded conditions. The remaining bus-level concerns are tracked in [\`docs/next_steps.md\`](docs/next_steps.md).
 
-ATP is designed to separate application-level concepts — device identity, telemetry, acknowledgements, heartbeats, faults, and prioritized events — from the physical transport carrying them. A message such as a heartbeat or a fault report is defined once, at the protocol level, and can travel over UART, RS-485, or Wi-Fi without being redesigned for each medium. A minimal ATP frame looks conceptually like:
+**ATP (Agnostic Telemetry Protocol)** is a separate, longer-term protocol effort motivated by the limitations of synchronous Modbus polling. The intended design includes device identity, heartbeats, prioritized faults, asynchronous events, and request/response correlation. A conceptual frame is:
 
-```text
+\`\`\`text
 [dest_id][src_id][msg_type][seq][payload][checksum]
-```
+\`\`\`
 
-Modbus RTU was studied closely during the design of ATP — not only as a reference, but as an intermediate transport actually implemented for Phase 2: the Pi (PyModbus) drives the Pico (`micropython-modbus`) over the same UART link validated in Phase 1, using a versioned register map ([`docs/Phase 2/p2_modbus_register_map_v1.md`](docs/Phase%202/p2_modbus_register_map_v1.md)) instead of the earlier ad hoc text/JSON commands. This gave the project firsthand experience with a mature protocol's approach to framing, addressing, and bus arbitration before ATP replaces it. ATP borrows from that foundation while extending it with asynchronous event reporting, message prioritization, and transport independence that Modbus's polling model does not provide.
+ATP is **not** described here as an installed replacement for the current Modbus/RS-485 implementation. Its future implementation and use in Weather Station will be documented when supported by completed code and integration tests.
 
-ATP will live in a separate repository so that its protocol specification and implementations can evolve independently from the weather-station application. A direct repository link will be added here once it is publicly available.
+See the [frozen P2 register-map specification](docs/phase_2/p2_modbus_register_map_v1.md), the [P3 environmental sensor mechanics specification](docs/phase_3/p3_07_bme688_removable_sensor_cartridge_spec.md), and the P4 implementation under [\`experiments/rs485/\`](experiments/rs485/).
 
 ---
 
@@ -129,145 +119,167 @@ Some components — particularly ATP, event scheduling, device coordination, and
 
 ## Core System
 
-| Component | Responsibility |
+| Component | Current role / state |
 |---|---|
-| Raspberry Pi 5 | Central coordination, persistence, API hosting, scheduling, and system management |
-| Raspberry Pi Pico 2 | Deterministic sensor acquisition and embedded control |
-| Raspberry Pi Zero 2 W | Camera control, servo operation, local Linux services, and remote expansion |
-| PostgreSQL | Telemetry, device state, configuration, system events, and operational history |
-| RS-485 | Planned wired field bus between the central system and outdoor nodes |
-| UART | Initial development transport for Pi-to-Pico communication |
-| ATP | Application-level telemetry and device communication protocol |
-| Fusion 360 | Mechanical design, printable components, assemblies, and future PCB work |
-| 3D printing | Enclosures, shields, mounts, brackets, and rapid mechanical prototyping |
+| Raspberry Pi 5 — \`weather-core\` | Central Linux node; validated sensor telemetry acquisition and PostgreSQL persistence |
+| Raspberry Pi Pico 2 (RP2350) | Sensor node running Pimoroni MicroPython, BME688/DHT11 drivers, Modbus RTU and RS-485 application firmware |
+| PostgreSQL | Validated persistence for environmental measurements, sample sequences, and experimental run metadata |
+| RS-485 | Validated with Pi 5 and Pico 2 on a bench; outdoor bus engineering and multi-node behavior remain open |
+| Raspberry Pi Zero 2 W | Planned camera and expansion node; not part of the validated sensor pipeline |
+| Fusion 360 | CAD reference models and mechanical design for sensor integration and printable outdoor structures |
+| FDM 3D printing | **Final-part fabrication has started**; physical assembly and environmental qualification are still in progress |
+| ATP | Future protocol work, not the active field-bus protocol |
 
 ---
 
 ## Environmental Monitoring
 
-The final sensor suite has not been frozen because the project is still validating its physical and electrical architecture.
+The primary environmental sensor in the validated P3/P4 node is the **Pimoroni BME688**, measuring temperature, relative humidity, atmospheric pressure, and raw gas resistance. A DHT11 is retained in the current firmware and test pipeline for comparison and historical validation.
 
-The station is expected to observe variables such as temperature, humidity, atmospheric pressure, rainfall, wind speed, and wind direction. Sensor selection will be driven by measurement quality, weather resistance, maintainability, interface constraints, and the ability to calibrate the complete assembly — not simply by which modules are easiest to connect.
+The P3-06 run operated for **24.13 hours** (30–31 August 2026), collecting **17,372 complete paired acquisitions** at five-second intervals: 34,744 raw DHT11/BME688 records persisted in PostgreSQL, with no missing samples, Modbus errors, database errors, or sequence gaps. The [consolidated validation report](experiments/bme_688/pi/results/p3_06_consolidated_report_20260830_181710.txt) is kept as test evidence, not as proof of outdoor environmental accuracy.
 
-This distinction matters because a weather station measures the behavior of a complete installation. Sensor placement, solar radiation, enclosure ventilation, cable length, mechanical alignment, and environmental exposure can affect the results as much as the sensor model itself.
+The broader station also includes development of a **wind-speed instrument (anemometer), wind-direction instrument (vane), and tipping-bucket rain gauge**. These need calibration, bearing/water-ingress evaluation, and integrated installation. Their measurement accuracy and outdoor reliability have not been established by the BME688/DHT11 software tests.
+
+Sensor placement matters as much as the electrical interface: the BME688 requires airflow, protection from direct radiation and water, drainage, access for cleaning, and thermal isolation from electronics. These are formalized in the [P3-07 removable-cartridge specification](docs/phase_3/p3_07_bme688_removable_sensor_cartridge_spec.md).
 
 ---
 
 ## Data and Backend
 
-PostgreSQL has been installed on the Raspberry Pi 5 and will serve as the initial system of record.
+PostgreSQL is deployed on the Raspberry Pi 5 and has already been used for end-to-end telemetry experiments—not merely proposed. P1 demonstrated raw DHT11 measurements and a separately computed dew-point metric. P3 demonstrated 24-hour paired DHT11/BME688 acquisition, validation, JSONL audit logging, and database persistence.
 
-The database is expected to hold more than raw measurements. It will also preserve information required to understand how the station was operating when those measurements were produced, including device identity, sensor configuration, communication health, power-loss events, validation results, and system status.
+The [P4 RS-485 long-run runner](experiments/rs485/p4_rs485_long_run.py) is implemented and reuses the validated P3 ingestion approach with an RS-485 transport client. Its existence does **not** imply that a corresponding long-duration P4 result has been completed and published.
 
-The backend will initially run directly on Raspberry Pi OS so that the behavior of Linux services, Python environments, PostgreSQL, hardware access, and process supervision can be understood without an additional abstraction layer.
-
-Containerization may be introduced later through Docker when the project has multiple deployable services and a concrete need for reproducible environments. Docker is therefore treated as a deployment tool to be learned in context, not as a prerequisite added before its purpose is clear.
+A continuously operated production service, general-purpose API, dashboard, and complete device-management backend are future integration work. Running initially as native Linux processes and later considering containerization remain deployment options, not prerequisites for mechanical fabrication.
 
 ---
 
 ## Mechanical and Electronic Design
 
-The physical station will require more than a generic electronics box.
+**The outdoor station has entered final-part 3D printing and physical integration**, alongside continuing electronics and software development. This is beyond CAD exploration and tolerance coupons, but **does not mean the complete instrument assembly has been installed or qualified outdoors**.
 
-Outdoor sensors need shielding from solar radiation and rain while retaining sufficient airflow. Wind and rainfall instruments require stable alignment and appropriate mounting. Electronics need protected cable entry, voltage conversion, service access, strain relief, and electrical safeguards against faults on a long outdoor connection.
+The mechanical concept discussed for the first integrated station uses a mast-mounted **V-shaped instrument support**, with wind-speed and wind-direction instruments on one arm and the rain gauge and radiation shield on the other. The geometry supports service access, especially to the rain gauge. Final configuration and individually completed prints should be established from manufacturing records rather than inferred from an earlier design concept.
 
-Fusion 360 will be used for both mechanical design and, when appropriate, PCB development. The repository versions editable `.f3d` files and printable `.stl` exports, while machine-specific G-code and temporary slicer files remain outside version control.
+The environmental sensing assembly is based on the frozen [P3-07 BME688 removable-cartridge requirements](docs/phase_3/p3_07_bme688_removable_sensor_cartridge_spec.md), including mechanically reversible mounting, airflow, rainfall/droplet protection, and thermal separation from the electronics.
 
-This provides a clear distinction between:
+Current engineering areas include:
 
-- the editable engineering source;
-- the exported manufacturing geometry;
-- the printer-specific instructions generated at production time.
+- outdoor-suitable printed materials and print-process validation (including ASA and PETG where appropriate);
+- fits, inserts, fasteners, and dimensional tolerances for serviceable printed parts;
+- rotation mechanisms, bearings, rain ingress, and maintenance of the wind instruments;
+- tipping-bucket rain gauge mechanics and eventual calibration;
+- enclosure protection, strain relief, 24 V distribution, cable routing, and RS-485 bus bias/termination before outdoor deployment.
+
+Fusion 360 is the CAD design environment. The repository reserves [\`hardware/cad/source/\`](hardware/cad/source/) for editable CAD and [\`hardware/cad/exports/\`](hardware/cad/exports/) for manufacturing exports, **but these directories do not yet contain the final CAD/STL artifacts in \`main\`**. Their absence should not be confused with an absence of physical design or printing activity; manufacturing artifacts and revision evidence still need to be published.
+
+The intended separation is editable design source, versioned printable exports, and printer-specific slicer/G-code files (normally kept outside Git).
 
 ---
 
 ## Repository Structure
 
-```text
+\`\`\`text
 weather-station/
 ├── backend/
+│   └── database/               # Experimental PostgreSQL schemas and queries
 ├── docs/
+│   ├── phase_1/
+│   ├── phase_2/
+│   ├── phase_3/
+│   ├── next_steps.md
+│   └── pico_provisioning.md
 ├── experiments/
+│   ├── dht_11/
+│   ├── modbus/
+│   ├── bme_688/
+│   └── rs485/
 ├── firmware/
-│   ├── pico/
-│   └── zero/
+│   ├── pico/                   # Canonical Pico application and dependency lock
+│   └── zero/                   # Reserved for future expansion
 ├── hardware/
 │   └── cad/
-│       ├── exports/
-│       └── source/
+│       ├── source/             # Reserved editable CAD
+│       └── exports/            # Reserved fabrication exports
 ├── infrastructure/
-├── .gitignore
-├── LICENSE
+├── tests/
+├── tools/
+│   └── picoctl.py             # Interactive one-command Pico provisioning
+├── CHANGELOG.md
 └── README.md
-```
+\`\`\`
 
 | Directory | Purpose |
 |---|---|
-| `backend/` | Central application services, persistence, scheduling, API, and telemetry processing |
-| `firmware/pico/` | Embedded software for Raspberry Pi Pico nodes |
-| `firmware/zero/` | Project-specific software for the Raspberry Pi Zero expansion node |
-| `hardware/cad/source/` | Editable Fusion 360 `.f3d` files |
-| `hardware/cad/exports/` | Printable `.stl` files |
-| `docs/` | Architecture, protocols, diagrams, design decisions, BOMs, and operating procedures |
-| `experiments/` | Isolated prototypes and proofs of concept before production integration |
-| `infrastructure/` | Deployment configuration, Linux services, backups, provisioning, and future containerization |
+| \`firmware/pico/\` | Canonical Pico 2 application, UART alternative, sensor drivers, and \`dependencies.lock.json\` |
+| \`tools/\` | Host-side provisioning and development utilities |
+| \`tests/\` | Automated tests, including installer regressions |
+| \`experiments/\` | Historical experiments, field-bus diagnostics, end-to-end runners, and retained validation evidence |
+| \`backend/database/\` | Test and prototype database models and SQL |
+| \`docs/\` | Engineering specifications, installation procedures, phase evidence, and deferred decisions |
+| \`hardware/cad/\` | Reserved source and export destinations for publishable manufacturing revisions |
+| \`firmware/zero/\`, \`infrastructure/\` | Expansion and deployment scaffolding; not evidence of completed runtime services |
+
+### Pico 2 provisioning
+
+A replacement Pico 2 can be provisioned from the repository root with one command:
+
+\`\`\`powershell
+python tools/picoctl.py
+\`\`\`
+
+The interactive installer lists serial ports, lets the operator select the device, backs up its filesystem, installs pinned \`micropython-modbus\` and the application modules, and verifies transferred files and imports. It also preserves a verified download of the known-good Pimoroni MicroPython UF2 **on the host PC**; it does not flash the UF2.
+
+This workflow was validated on a physical Pico 2 (COM12) with a verified 15-file backup and passed post-install integrity checks. Dependency versions and hashes are maintained in [\`firmware/pico/dependencies.lock.json\`](firmware/pico/dependencies.lock.json). The [provisioning guide](docs/pico_provisioning.md) contains diagnostic and advanced usage details.
 
 ---
 
 ## Development Method
 
-Subsystems are first explored through focused experiments before they become part of the main implementation.
+The project uses incremental validation rather than treating a functioning prototype as a completed field installation. Experimental results are retained in \`experiments/\`; proven device code is promoted into \`firmware/\`; mechanical requirements, reproducible configurations, and deferred engineering decisions are documented alongside their evidence.
 
-For example, direct UART communication between the Pi and Pico will be validated independently before introducing RS-485. Sensor readout will be tested before it is combined with telemetry serialization. Database ingestion will be exercised before the complete API is built.
+P1 validated direct UART, P2 validated the Modbus control contract, P3 validated BME688 telemetry and database persistence, and P4 established the half-duplex RS-485 bench implementation and its timing requirements. Physical manufacturing can proceed concurrently, while field-bus commissioning, sensor calibration, and long-term outdoor operation remain separate acceptance stages.
 
-This keeps early learning code useful without allowing experimental assumptions to become accidental production architecture.
-
-Representative experiments include:
-
-```text
-experiments/
-├── uart-pi-pico/
-├── rs485-loopback/
-├── sensor-readout/
-├── postgres-ingestion/
-└── power-loss-detection/
-```
+For the active technical debt and its test evidence, see [\`docs/next_steps.md\`](docs/next_steps.md).
 
 ---
 
 ## Current Status
 
-The project foundation is operational:
+**As of November 2026:** the work is transitioning from sensor/communication experiments to **physical fabrication, subsystem integration, and preparation for outdoor deployment**.
 
-- Raspberry Pi OS is installed on the central node.
-- Remote development works through SSH and Visual Studio Code.
-- SSH password authentication has been disabled in favor of keys.
-- Git has been configured.
-- PostgreSQL has been installed.
-- The monorepo structure has been established.
-- The initial project documentation is being created.
-- **Phase 1 is complete.** Bidirectional UART communication between the Raspberry Pi 5 and a Raspberry Pi Pico 2 works end to end, including a command protocol (`PING`, `STATUS`, `START`, `STOP`, `SET_INTERVAL`, `READ_NOW`), a DHT11 sensor node reporting JSON telemetry that the Pi validates, queues, and persists into PostgreSQL without blocking the UART read loop, connection-liveness tracking with automatic state reconciliation after a reconnect, and a first derived metric (dew point, via the Magnus formula) computed from stored raw readings by an independent process. Validated with a 23h25m continuous run with zero data loss.
-- **Phase 2 is complete.** The ad hoc UART command/telemetry format has been replaced with a Modbus RTU contract. Register Map v1.0 is published and frozen ([`docs/Phase 2/p2_modbus_register_map_v1.md`](docs/Phase%202/p2_modbus_register_map_v1.md)), with a reusable, resilient Pi-side client, Pico-side server firmware implementing the full control contract, and an automated integration suite passing 19/19 tests.
+| Workstream | Status | Evidence / remaining boundary |
+|---|---|---|
+| **P1 — Pi↔Pico UART + DHT11** | Complete | 23 h 25 min continuous run; validated ingestion, liveness, and reconnection |
+| **P2 — Modbus RTU contract** | Complete | Frozen v1.0 register map and 19/19 integration tests |
+| **P3 — BME688 environmental acquisition** | Complete | v1.1 (\`0x0101\`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
+| **P4 — RS-485 communication** | Bench-validated; integration work remains | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
+| **Pico 2 provisioning** | Complete | One-command installer, pinned UF2/dependencies, hardware-proven backup and upload, 23 automated tests |
+| **Outdoor mechanical fabrication** | In progress | Final printed parts are now being produced; assembly, qualification and revision-controlled CAD/STL publication remain open |
+| **Outdoor wiring and protection** | Not field-qualified | Power distribution, bus bias/termination, weatherproofing and environmental exposure validation still needed |
+| **Production backend / dashboard** | Planned | Experimental storage is working; unattended production services and user interface are separate work |
+| **Camera node / ATP** | Future | Neither is part of the commissioned station or validated P4 pipeline |
 
-The next technical milestone is designing the first ATP message implementations on top of this validated Modbus foundation, before the RS-485 migration and additional sensors are introduced.
+**What is not being claimed:** a finished outdoor installation, validated wind/rain calibration, P4 long-term field stability, or an operational camera node.
+
+The next useful integration steps are to complete and document the first assembled sensor/instrument modules, validate the outdoor electronics and RS-485 wiring, and carry the proven acquisition chain into the physical station.
 
 ---
 
 ## Roadmap
 
-Development is organized around a small number of major milestones:
+The phase labels below follow the validated P1–P4 milestones and separate mechanical production from software experiments. They describe progress, not a claim that all sub-tasks within a phase have closed.
 
-| Phase | Focus | Status |
+| Stage | Scope | Status |
 |---|---|---|
-| 1 | Development environment and repository foundation | Complete |
-| 2 | Pi-to-Pico communication and initial ATP messages | In progress |
-| 3 | Sensor acquisition and PostgreSQL ingestion | Complete |
-| 4 | RS-485 field bus and distributed device scheduling | Planned |
-| 5 | Backend API, dashboard, and operational monitoring | Planned |
-| 6 | Outdoor hardware, enclosures, and electrical protection | Planned |
-| 7 | Camera node, external services, and advanced analytics | Future |
+| P1 | Initial Pi–Pico UART sensing and database pipeline | Complete |
+| P2 | Modbus RTU contract and frozen register map | Complete |
+| P3 | BME688 integration, environmental data validation and sensor-cartridge specification | Complete |
+| P4 | RS-485 bench link, diagnostics, multi-node and long-duration robustness | Bench validation done; further integration open |
+| Outdoor fabrication and integration | Printable sensor structures, moving mechanisms, wiring, enclosure, mounting and calibration | **Final-part printing underway** |
+| Production services | Unattended ingestion, device management, API, dashboard and monitoring | Future |
+| Expansion | Camera node, additional devices, external services, ATP integration and analytics | Future |
 
-The detailed implementation roadmap will be maintained in [`docs/roadmap.md`](docs/roadmap.md) as tasks and design dependencies become concrete.
+Deferred technical requirements and their triggers are tracked in [\`docs/next_steps.md\`](docs/next_steps.md). A dedicated consolidated roadmap file has not yet been published in this repository.
 
 ---
 
@@ -280,10 +292,10 @@ The detailed implementation roadmap will be maintained in [`docs/roadmap.md`](do
 | Embedded development | MicroPython, with C/C++ considered where needed |
 | Database | PostgreSQL |
 | API | FastAPI, planned |
-| Communication | UART, RS-485, Wi-Fi, and ATP |
+| Communication | UART and Modbus RTU over RS-485 (validated on bench); Wi-Fi and ATP for future expansions |
 | Development environment | Visual Studio Code Remote SSH |
 | Version control | Git and GitHub |
-| Mechanical design | Fusion 360 |
+| Mechanical design | Fusion 360; outdoor part fabrication underway |
 | PCB design | Fusion 360, planned |
 | Deployment | Native Linux services initially; Docker to be evaluated later |
 | Visualization | Web dashboard, planned |
@@ -298,7 +310,7 @@ It will include the protocol specification, system architecture, database design
 
 The README is intended to remain the entry point: it explains what the project is, why its architecture exists, what has already been built, and where to find deeper technical material.
 
-Notable changes across the project are tracked in [`CHANGELOG.md`](CHANGELOG.md).
+Notable changes across the project are tracked in [`CHANGELOG.md`](CHANGELOG.md). The README is an overview rather than a source of detailed hardware-build records; final-part revision files and photographs have not yet been added under `hardware/cad/`.
 
 ---
 

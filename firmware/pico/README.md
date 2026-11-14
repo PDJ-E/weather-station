@@ -7,17 +7,16 @@ firmware/pico/
 ├── main.py                        # P4 RS-485 application (formerly bme688_modbus_rs485_pico.py)
 ├── bme688_modbus_extension.py
 ├── bme688_sensor.py
+├── common_interface_test.py       # optional active sensor test
 ├── dht11_sensor.py
 ├── environmental_reading.py
 ├── pico_modbus_patch.py
-├── profiles/
-│   └── uart/
-│       └── main.py                # historical P3 direct UART application
-└── tests/
-    └── common_interface_test.py   # optional device test source
+└── profiles/
+    └── uart/
+        └── main.py                # historical P3 direct UART application
 ```
 
-Note: common_interface_test.py is **not copied by default** and remains physically in tests/ in the GitHub repository, to avoid running it during provisioning. The default `main.py` is an **unchanged copy** of `experiments/bme_688/pico/bme688_modbus_rs485_pico.py`, the exact filename that was running as main.py on the previous Pico.
+Note: common_interface_test.py is stored alongside all other source files in GitHub, but is **not copied by default** because it is an optional, active sensor-reading test. Use --include-tests to upload it. The default `main.py` is an **unchanged copy** of `experiments/bme_688/pico/bme688_modbus_rs485_pico.py`, the exact filename that was running as main.py on the previous Pico.
 
 The `umodbus` library is installed on the device at `/lib/umodbus/` by the provisioning tool, from the pinned `micropython-modbus==2.3.7` dependency.
 

@@ -9,6 +9,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -72,44 +73,95 @@ def ensure_mpremote() -> None:
         raise ProvisionError("Install mpremote: python -m pip install mpremote")
 
 
-def device_inventory(port: str) -> list[str]:
-    """Enumerate all files on Pico flash for a lossless pre-deploy backup."""
-    script = """import os
-def walk(path):
-    for name in os.listdir(path):
-        p = path.rstrip('/') + '/' + name
-        try:
-            mode = os.stat(p)[0]
-        except OSError:
+def list_device_entries(port: str, directory: str = "") -> list[tuple[str, bool, int]]:
+    """Read Pico filesystem using the same mpremote fs ls API as users.
+
+    Unlike executing a custom os.walk script in raw REPL, mpremote's
+    filesystem listing has already proven reliable for this device.
+    Returns (relative_path, is_directory, reported_size).
+    """
+    location = ":/" + directory if directory else ":"
+    output = mpremote(port, "fs", "ls", location)
+    entries = []
+    saw_heading = False
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("ls :"):
+            saw_heading = True
             continue
-        if mode & 0x4000:
-            walk(p)
-        else:
-            print('WSPICOFILE:' + p.lstrip('/'))
-walk('/')
-"""
-    output = mpremote(port, "exec", script)
-    paths = [
-        line.partition("WSPICOFILE:")[2].strip()
-        for line in output.splitlines() if "WSPICOFILE:" in line
-    ]
-    if any(not p or p.startswith("../") or "/../" in p for p in paths):
-        raise ProvisionError("Unexpected remote path; refusing backup")
-    return sorted(set(paths))
+        match = re.fullmatch(r"(\d+)\s+(.+)", line)
+        if not match:
+            if line and not line.startswith("ls :"):
+                raise ProvisionError(f"Unrecognized mpremote fs ls output: {line!r}")
+            continue
+        size = int(match.group(1))
+        name = match.group(2).strip()
+        is_dir = name.endswith("/")
+        name = name.rstrip("/")
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            raise ProvisionError(f"Unsafe Pico filesystem name: {name!r}")
+        rel = f"{directory}/{name}" if directory else name
+        entries.append((rel, is_dir, size))
+
+    # An empty listing is legitimate; an unrecognized or empty response is not.
+    if not entries and not saw_heading:
+        raise ProvisionError(
+            "Pico file listing returned no recognizable output; refusing backup"
+        )
+    return entries
+
+
+def device_inventory(port: str) -> list[tuple[str, int]]:
+    """Enumerate and size-check Pico files before overwriting anything."""
+    stack = [""]
+    files = []
+    visited = set()
+    while stack:
+        directory = stack.pop()
+        if directory in visited:
+            raise ProvisionError("Recursive/duplicate directory in Pico inventory")
+        visited.add(directory)
+        for name, is_dir, size in list_device_entries(port, directory):
+            if is_dir:
+                stack.append(name)
+            else:
+                files.append((name, size))
+        if len(files) > 1000 or len(visited) > 100:
+            raise ProvisionError("Unexpectedly large Pico inventory; refusing backup")
+
+    # Fail closed: Pico already holding files MUST NOT report 0 backups.
+    # On a genuinely blank board, --skip-backup is the explicit opt-in.
+    if not files:
+        raise ProvisionError(
+            "Found no files to back up. Refusing unsafe empty backup; "
+            "use --skip-backup only if the Pico is definitely empty."
+        )
+    return sorted(files)
+
 
 
 def backup(port: str, destination: Path) -> Path:
     inventory = device_inventory(port)
     destination.mkdir(parents=True, exist_ok=False)
-    for name in inventory:
+    for name, expected_size in inventory:
         local = destination / name
         local.parent.mkdir(parents=True, exist_ok=True)
         mpremote(port, "fs", "cp", ":/" + name, str(local), timeout=90)
+        if not local.is_file() or local.stat().st_size != expected_size:
+            raise ProvisionError(
+                f"Backup incomplete: {name}, expected {expected_size} bytes. "
+                "No deployment has started; inspect the Pico before retrying."
+            )
     (destination / "inventory.json").write_text(
-        json.dumps({"device_files": inventory}, indent=2), encoding="utf-8"
+        json.dumps(
+            {"device_files": [
+                {"path": name, "size": size} for name, size in inventory
+            ]}, indent=2
+        ), encoding="utf-8"
     )
-    print(f"Backed up {len(inventory)} file(s) to {destination}")
+    print(f"Backup verified: {len(inventory)} file(s) saved to {destination}")
     return destination
+
 
 
 def download_firmware(offline: bool = False) -> Path:
@@ -260,6 +312,8 @@ for name in ('pimoroni_i2c', 'breakout_bme68x', 'umodbus'):
         raise ProvisionError("Device is not an RP2/RP2350 MicroPython board")
     if "WS_IMPORT: breakout_bme68x OK" not in result or "WS_IMPORT: pimoroni_i2c OK" not in result:
         raise ProvisionError("Pimoroni drivers missing; verify the preinstalled UF2 (not flashed by this tool)")
+    if "WS_IMPORT: umodbus MISSING" in result:
+        print("INFO: umodbus is not installed yet; the deploy step installs it automatically.")
 
 
 def default_backup_path() -> Path:
@@ -316,12 +370,89 @@ def deploy(args: argparse.Namespace) -> None:
         mpremote(args.port, "fs", "cp", str(main_source), ":/main.py", timeout=90)
         verify_copy(args.port, main_source, "main.py", scratch)
 
-    print("Deployment verified by SHA256 read-back for every file.")
+    postcheck = mpremote(
+        args.port, "exec",
+        "from umodbus.serial import ModbusRTU\n"
+        "import breakout_bme68x, pimoroni_i2c\n"
+        "import pico_modbus_patch, bme688_sensor, environmental_reading\n"
+        "print('WS_PROVISION_VERIFY_OK')",
+    )
+    if "WS_PROVISION_VERIFY_OK" not in postcheck:
+        raise ProvisionError("Post-install import verification did not pass")
+    print("Deployment verified: file SHA256 read-back AND on-device imports OK.")
     if args.reset:
         print("Resetting Pico; main.py will start if the required wiring is ready.")
         mpremote(args.port, "reset")
     else:
         print("No reset performed; reconnect/reset Pico when sensors and RS-485 wiring are ready.")
+
+
+def bootstrap_mpremote() -> None:
+    """The interactive one-command workflow installs its host dependency if needed."""
+    try:
+        ensure_mpremote()
+        return
+    except ProvisionError:
+        print("mpremote not found. Installing the USB provisioning dependency...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "mpremote"],
+            check=False,
+        )
+        if result.returncode:
+            raise ProvisionError(
+                "Failed to install mpremote. Install it once with: "
+                "python -m pip install mpremote"
+            )
+        ensure_mpremote()
+
+
+def interactive_port() -> str:
+    """Show actual serial ports and let the operator select a target."""
+    try:
+        from serial.tools import list_ports
+    except ImportError as exc:
+        raise ProvisionError(
+            "pyserial unavailable; mpremote installation may be incomplete"
+        ) from exc
+
+    ports = sorted(list_ports.comports(), key=lambda p: p.device.upper())
+    print("\nAvailable serial ports:")
+    if not ports:
+        print("  No serial ports detected. Plug the Pico in via USB and retry.")
+        raise ProvisionError("No serial port detected")
+    for index, port in enumerate(ports, 1):
+        details = port.description or "Unknown device"
+        print(f"  [{index}] {port.device} — {details}")
+    print("\nSelect the Pico by number, or type its COM port.")
+    while True:
+        answer = input("Pico port [1]: ").strip()
+        if not answer:
+            return ports[0].device
+        if answer.isdigit():
+            selected = int(answer)
+            if 1 <= selected <= len(ports):
+                return ports[selected - 1].device
+        for port in ports:
+            if answer.upper() == port.device.upper():
+                return port.device
+        print("Invalid selection. Choose a listed number or COM port.")
+
+
+def interactive_install() -> int:
+    """Full setup in one command: python tools/picoctl.py."""
+    print("=" * 55)
+    print("  Weather Station | Pico 2 — One-command installer")
+    print("=" * 55)
+    bootstrap_mpremote()
+    port = interactive_port()
+    print(f"\nInstalling to {port} using RS-485 (P4) profile.")
+    print("The installed MicroPython UF2 will NOT be flashed or erased.")
+    args = parser().parse_args(["deploy", "--port", port, "--apply"])
+    deploy(args)
+    print("\nSUCCESS — Pico application and umodbus are installed and verified.")
+    print("UF2 archive retained on your PC. No weather-core setup is necessary.")
+    print("Reset/power-cycle only when the sensors and RS-485 wiring are ready.")
+    return 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -349,8 +480,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
     try:
+        if not argv:
+            return interactive_install()
+        args = parser().parse_args(argv)
         if args.command == "doctor":
             ensure_mpremote()
             doctor(args.port)
@@ -364,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
             backup(args.port, path)
         else:
             deploy(args)
-    except (ProvisionError, OSError, ValueError, KeyError) as exc:
+    except (ProvisionError, OSError, ValueError, KeyError, EOFError, KeyboardInterrupt) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     return 0

@@ -76,3 +76,6 @@ htmlcov/
 
 # Local Pico flash backups created by tools/picoctl.py
 .pico-backups/
+
+# Cached known-good Pimoroni UF2 (downloaded by picoctl, never flashed)
+.pico-firmware/

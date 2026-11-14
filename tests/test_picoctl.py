@@ -1,4 +1,5 @@
 """Host-side provisioning regression tests; no connected Pico is required."""
+import contextlib
 import io
 import json
 import hashlib
@@ -119,7 +120,7 @@ class PicoctlTests(unittest.TestCase):
             pico = Path(tmp)
             common = pico
             common.mkdir(exist_ok=True)
-            for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
+            for name in (*picoctl.CORE, *picoctl.EXTRA_MODULES):
                 (common / name).write_text("# fixture", encoding="utf-8")
             (pico / "main.py").write_text("# fixture", encoding="utf-8")
             with mock.patch.object(picoctl, "PICO", pico), mock.patch.object(
@@ -127,7 +128,7 @@ class PicoctlTests(unittest.TestCase):
             ), mock.patch.object(picoctl, "mpremote", side_effect=AssertionError), mock.patch.object(
                 picoctl, "download_firmware", side_effect=AssertionError
             ):
-                args = picoctl.parser().parse_args(["deploy", "--port", "COM5"])
+                args = picoctl.parser().parse_args(["deploy", "--profile", "socket"])
                 picoctl.deploy(args)
 
     def test_extractor_accepts_only_module_python_files(self):
@@ -180,7 +181,7 @@ class PicoctlTests(unittest.TestCase):
 
     def test_empty_backup_is_fail_closed(self):
         with mock.patch.object(picoctl, "mpremote", return_value="ls :\n"):
-            with self.assertRaises(picoctl.ProvisionError):
+            with self.assertRaises(picoctl.EmptyDeviceError):
                 picoctl.device_inventory("COM12")
 
     def test_backup_checks_file_size_and_creates_inventory(self):
@@ -235,11 +236,14 @@ class PicoctlTests(unittest.TestCase):
     def test_one_command_wizard_selects_port_and_applies(self):
         with mock.patch.object(picoctl, "bootstrap_mpremote"), mock.patch.object(
             picoctl, "interactive_port", return_value="COM12"
+        ), mock.patch.object(
+            picoctl, "interactive_profile", return_value="bench"
         ), mock.patch.object(picoctl, "deploy") as deployed:
             self.assertEqual(picoctl.interactive_install(), 0)
         args = deployed.call_args.args[0]
         self.assertEqual(args.port, "COM12")
-        self.assertEqual(args.profile, "rs485")
+        self.assertEqual(args.profile, "bench")
+        self.assertTrue(callable(args.confirm_empty))
         self.assertTrue(args.apply)
         self.assertFalse(args.skip_backup)
         self.assertFalse(args.reset)
@@ -251,18 +255,18 @@ class PicoctlTests(unittest.TestCase):
         ):
             self.assertEqual(picoctl.interactive_port(), "COM12")
 
-    def test_rs485_uses_pico_root_as_main(self):
+    def test_socket_uses_pico_root_as_main(self):
         with tempfile.TemporaryDirectory() as tmp:
             pico = Path(tmp)
             common = pico
             common.mkdir(exist_ok=True)
-            for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
+            for name in (*picoctl.CORE, *picoctl.EXTRA_MODULES):
                 (common / name).write_text("# fixture", encoding="utf-8")
             (pico / "main.py").write_text("# P4 fixture", encoding="utf-8")
             with mock.patch.object(picoctl, "PICO", pico), mock.patch.object(
                 picoctl, "COMMON", common
             ):
-                files = picoctl.source_files("rs485", False, None)
+                files = picoctl.source_files("socket", False, None)
                 self.assertEqual(files[-1], (pico / "main.py", "main.py"))
 
     def test_main_is_last_source_file(self):
@@ -270,7 +274,7 @@ class PicoctlTests(unittest.TestCase):
             pico = Path(tmp)
             common = pico
             common.mkdir(exist_ok=True)
-            for name in (*picoctl.CORE, "bme688_modbus_extension.py"):
+            for name in (*picoctl.CORE, *picoctl.EXTRA_MODULES):
                 (common / name).write_text("# fixture", encoding="utf-8")
             app = pico / "profiles" / "uart"
             app.mkdir(parents=True)
@@ -280,6 +284,278 @@ class PicoctlTests(unittest.TestCase):
             ):
                 files = picoctl.source_files("uart", False, None)
                 self.assertEqual(files[-1][1], "main.py")
+
+
+class FakePico:
+    """In-memory Pico filesystem that answers the mpremote calls picoctl makes."""
+
+    DOCTOR = ("WS_PLATFORM: rp2\nWS_MACHINE: Raspberry Pi Pico2 with RP2350\n"
+              "WS_IMPORT: pimoroni_i2c OK\nWS_IMPORT: breakout_bme68x OK\n"
+              "WS_IMPORT: umodbus MISSING ImportError()\n")
+
+    def __init__(self, files=None):
+        self.files = dict(files or {})
+        self.resets = 0
+        self.writes = []
+
+    def __call__(self, port, *args, **kwargs):
+        if args[:2] == ("fs", "ls"):
+            base = args[2][1:].strip("/")
+            prefix = base + "/" if base else ""
+            out, dirs = [f"ls :{'/' + base if base else ''}"], set()
+            for name, data in sorted(self.files.items()):
+                if not name.startswith(prefix):
+                    continue
+                rest = name[len(prefix):]
+                if "/" in rest:
+                    dirs.add(rest.split("/")[0])
+                else:
+                    out.append(f"{len(data):12} {rest}")
+            out += [f"{0:12} {d}/" for d in sorted(dirs)]
+            return "\n".join(out) + "\n"
+        if args[:3] == ("fs", "cp", "-r"):
+            local, dest = Path(args[3]), args[4][1:].strip("/")
+            for item in local.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(local.parent).as_posix()
+                    self.files[f"{dest}/{rel}"] = item.read_bytes()
+            return ""
+        if args[:2] == ("fs", "cp"):
+            src, dst = args[2], args[3]
+            if src.startswith(":"):
+                Path(dst).write_bytes(self.files[src[1:].lstrip("/")])
+            else:
+                name = dst[1:].lstrip("/")
+                self.files[name] = Path(src).read_bytes()
+                self.writes.append(name)
+            return ""
+        if args[:2] == ("fs", "sha256sum"):
+            lines = []
+            for path in args[2:]:
+                name = path[1:].lstrip("/")
+                lines += [f"sha256sum :/{name}", hashlib.sha256(self.files[name]).hexdigest()]
+            return "\n".join(lines) + "\n"
+        if args[0] == "exec":
+            code = args[1]
+            if "WS_PLATFORM" in code:
+                return self.DOCTOR
+            if "WS_PROVISION_VERIFY_OK" in code:
+                return "WS_PROVISION_VERIFY_OK\n"
+            return ""
+        if args == ("reset",):
+            self.resets += 1
+            return ""
+        raise AssertionError(args)
+
+
+def make_sdist(path):
+    with tarfile.open(path, "w:gz") as tar:
+        for name, contents in (("pkg/umodbus/__init__.py", b""), ("pkg/umodbus/serial.py", b"# rtu")):
+            item = tarfile.TarInfo(name)
+            item.size = len(contents)
+            tar.addfile(item, io.BytesIO(contents))
+    return path
+
+
+class TraceabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        pico = self.root / "firmware" / "pico"
+        (pico / "profiles" / "bench").mkdir(parents=True)
+        (pico / "profiles" / "uart").mkdir(parents=True)
+        for name in (*picoctl.CORE, *picoctl.EXTRA_MODULES):
+            (pico / name).write_text(f"# {name}\n", encoding="utf-8")
+        (pico / "main.py").write_text("# socket main\n", encoding="utf-8")
+        (pico / "profiles" / "bench" / "main.py").write_text("# bench main\n", encoding="utf-8")
+        (pico / "profiles" / "uart" / "main.py").write_text("# uart main\n", encoding="utf-8")
+        archive = make_sdist(self.root / "mm.tar.gz")
+        self.patches = [
+            mock.patch.object(picoctl, "REPO", self.root),
+            mock.patch.object(picoctl, "PICO", pico),
+            mock.patch.object(picoctl, "COMMON", pico),
+            mock.patch.object(picoctl, "BACKUP_ROOT", self.root / ".pico-backups"),
+            mock.patch.object(picoctl, "LOG_FILE", self.root / ".pico-deployments" / "log.jsonl"),
+            mock.patch.object(picoctl, "EXPECTED_SHA256", picoctl.file_sha(archive)),
+            mock.patch.object(picoctl, "ensure_mpremote"),
+            mock.patch.object(picoctl, "cache_uf2_best_effort"),
+            mock.patch.object(picoctl, "_git", return_value=None),
+        ]
+        for patch in self.patches:
+            patch.start()
+        self.archive = archive
+        self.pico_dir = pico
+
+    def tearDown(self):
+        for patch in reversed(self.patches):
+            patch.stop()
+        self.tmp.cleanup()
+
+    def deploy(self, fake, *extra, confirm=None):
+        args = picoctl.parser().parse_args(
+            ["deploy", "--port", "COM12", "--profile", "socket", "--apply",
+             "--archive", str(self.archive), *extra]
+        )
+        if confirm is not None:
+            args.confirm_empty = confirm
+        with mock.patch.object(picoctl, "mpremote", side_effect=fake), \
+                contextlib.redirect_stdout(io.StringIO()):
+            picoctl.deploy(args)
+
+    def run_status(self, fake):
+        args = picoctl.parser().parse_args(["status", "--port", "COM12"])
+        out = io.StringIO()
+        with mock.patch.object(picoctl, "mpremote", side_effect=fake), contextlib.redirect_stdout(out):
+            code = picoctl.status(args)
+        return code, out.getvalue()
+
+    def test_auto_port_is_refused_for_device_writes(self):
+        for port in (None, "auto", "AUTO"):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.require_port(port)
+        self.assertEqual(picoctl.require_port("COM12"), "COM12")
+
+    def test_profile_is_required(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            picoctl.parser().parse_args(["deploy", "--port", "COM12"])
+
+    def test_profiles_resolve_to_distinct_entry_points(self):
+        mains = {name: picoctl.source_files(name, False, None)[-1][0] for name in picoctl.PROFILES}
+        self.assertEqual(mains["socket"], self.pico_dir / "main.py")
+        self.assertEqual(mains["bench"], self.pico_dir / "profiles" / "bench" / "main.py")
+        self.assertEqual(len(set(mains.values())), 3)
+
+    def test_empty_pico_needs_explicit_confirmation(self):
+        with self.assertRaises(picoctl.EmptyDeviceError):
+            self.deploy(FakePico())
+        self.deploy(FakePico(), confirm=lambda: True)
+        with self.assertRaises(picoctl.EmptyDeviceError):
+            self.deploy(FakePico(), confirm=lambda: False)
+
+    def test_deploy_writes_manifest_last_and_status_is_in_sync(self):
+        fake = FakePico({"boot.py": b"# old"})
+        self.deploy(fake)
+        self.assertEqual(fake.writes[-1], picoctl.MANIFEST_NAME)
+        self.assertEqual(fake.writes[-2], "main.py")
+        manifest = json.loads(fake.files[picoctl.MANIFEST_NAME])
+        self.assertEqual(manifest["profile"], "socket")
+        self.assertEqual(manifest["files"]["main.py"]["source"], "firmware/pico/main.py")
+        self.assertEqual(manifest["files"]["main.py"]["sha256"],
+                         hashlib.sha256(b"# socket main\n").hexdigest())
+        self.assertIn("lib/umodbus/serial.py", manifest["files"])
+        self.assertEqual(fake.resets, 0)
+        log = (self.root / ".pico-deployments" / "log.jsonl").read_text().splitlines()
+        self.assertEqual(json.loads(log[-1])["event"], "deploy")
+        backups = list((self.root / ".pico-backups").iterdir())
+        self.assertEqual((backups[0] / "boot.py").read_bytes(), b"# old")
+
+        code, out = self.run_status(fake)
+        self.assertEqual(code, 0, out)
+        self.assertIn("/boot.py", out)  # reported as not in the record
+        self.assertIn("Pico matches its deployment record", out)
+
+    def test_status_detects_hand_edit_and_repo_change(self):
+        fake = FakePico({"boot.py": b"# old"})
+        self.deploy(fake)
+        fake.files["main.py"] = b"# edited in Thonny"
+        (self.pico_dir / "bme688_sensor.py").write_text("# changed in repo\n", encoding="utf-8")
+        code, out = self.run_status(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("CHANGED since recorded", out)
+        self.assertIn("repository copy differs: firmware/pico/bme688_sensor.py", out)
+
+    def test_status_without_manifest(self):
+        code, out = self.run_status(FakePico({"main.py": b"x"}))
+        self.assertEqual(code, 1)
+        self.assertIn("No /" + picoctl.MANIFEST_NAME, out)
+
+    def test_push_backs_up_overwritten_file_and_records_it(self):
+        fake = FakePico({"boot.py": b"# old"})
+        self.deploy(fake)
+        script = self.root / "experiments" / "probe.py"
+        script.parent.mkdir()
+        script.write_text("# probe\n", encoding="utf-8")
+        args = picoctl.parser().parse_args(
+            ["push", str(script), "--as", "main.py", "--port", "COM12", "--apply", "--note", "probe"]
+        )
+        with mock.patch.object(picoctl, "mpremote", side_effect=fake), \
+                contextlib.redirect_stdout(io.StringIO()):
+            picoctl.push(args)
+        self.assertEqual(fake.files["main.py"], b"# probe\n")
+        manifest = json.loads(fake.files[picoctl.MANIFEST_NAME])
+        self.assertEqual(manifest["files"]["main.py"]["source"], "experiments/probe.py")
+        self.assertEqual(manifest["pushes"][-1]["note"], "probe")
+        push_backup = [p for p in (self.root / ".pico-backups").iterdir() if p.name.endswith("-push")]
+        self.assertEqual((push_backup[0] / "main.py").read_bytes(), b"# socket main\n")
+        code, out = self.run_status(fake)
+        self.assertEqual(code, 0, out)
+
+    def test_push_dry_run_does_not_touch_device(self):
+        script = self.root / "x.py"
+        script.write_text("# x\n", encoding="utf-8")
+        args = picoctl.parser().parse_args(["push", str(script)])
+        with mock.patch.object(picoctl, "mpremote", side_effect=AssertionError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            picoctl.push(args)
+
+    def test_push_rejects_manifest_name_and_multi_file_rename(self):
+        a, b = self.root / "a.py", self.root / "b.py"
+        a.write_text("a"), b.write_text("b")
+        for argv in (["push", str(a), "--as", picoctl.MANIFEST_NAME],
+                     ["push", str(a), str(b), "--as", "main.py"]):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.push(picoctl.parser().parse_args(argv))
+
+    def test_sha256sum_parser_rejects_unknown_output(self):
+        with mock.patch.object(picoctl, "mpremote", return_value="garbage\n"):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.device_sha256("COM12", ["main.py"])
+
+    def test_git_porcelain_keeps_first_character_of_path(self):
+        outputs = {
+            ("rev-parse", "HEAD"): "a" * 40 + "\n",
+            ("rev-parse", "--abbrev-ref", "HEAD"): "main\n",
+        }
+
+        def fake_git(*args):
+            if args[0] == "status":
+                return " M firmware/pico/main.py\n?? experiments/new.py\n"
+            return outputs[args]
+
+        with mock.patch.object(picoctl, "_git", side_effect=fake_git):
+            info = picoctl.git_snapshot([self.pico_dir / "main.py", self.root / "experiments" / "new.py"])
+        self.assertEqual(info["modified_files"], ["firmware/pico/main.py"])
+        self.assertEqual(info["untracked_files"], ["experiments/new.py"])
+        self.assertFalse(info["clean"])
+
+
+class MpremotePinTests(unittest.TestCase):
+    def test_wrong_mpremote_version_is_rejected(self):
+        with mock.patch.object(picoctl, "installed_mpremote_version", return_value="1.30.0"):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.ensure_mpremote()
+        with mock.patch.object(picoctl, "installed_mpremote_version", return_value=None):
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.ensure_mpremote()
+        with mock.patch.object(picoctl, "installed_mpremote_version",
+                               return_value=picoctl.MPREMOTE_VERSION):
+            picoctl.ensure_mpremote()
+
+    def test_requirements_pin_matches_tool(self):
+        requirements = (Path(picoctl.REPO) / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn(f"mpremote=={picoctl.MPREMOTE_VERSION}", requirements)
+
+    def test_interactive_port_defaults_only_to_single_raspberry_pi(self):
+        pico = type("Port", (), {"device": "COM12", "description": "Board", "vid": 0x2E8A})
+        other = type("Port", (), {"device": "COM3", "description": "USB serial", "vid": 0x0403})
+        with mock.patch("serial.tools.list_ports.comports", return_value=[other, pico]), \
+                mock.patch("builtins.input", return_value=""), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(picoctl.interactive_port(), "COM12")
+
+    def test_interactive_profile_has_no_default(self):
+        with mock.patch("builtins.input", side_effect=["", "9", "bench"]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(picoctl.interactive_profile(), "bench")
 
 
 if __name__ == "__main__":

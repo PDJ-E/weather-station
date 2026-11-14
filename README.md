@@ -79,7 +79,7 @@ The mechanical station is being fabricated in parallel with the electronics. The
 
 **Modbus RTU is the currently implemented telemetry and control protocol.** P2 established the frozen register-map v1.0 for the DHT11; P3 extended the environmental telemetry to **v1.1 (`0x0101`)** for the BME688. The same application contract is exercised over the P4 RS-485 physical link.
 
-The main Pico application is maintained at [`firmware/pico/main.py`](firmware/pico/main.py). The Pi-side P4 [RS-485 Modbus client](experiments/rs485/rs485_modbus_client.py) includes bounded retries, reception resynchronization, request/response checks, a 5 ms inter-frame gap, and transport counters. Its RS-485 behavior was characterized in dedicated turnaround diagnostics under idle and CPU/I/O-loaded conditions. The remaining bus-level concerns are tracked in [`docs/next_steps.md`](docs/next_steps.md).
+The Pico application is maintained in [`firmware/pico/`](firmware/pico/) as deployment profiles: [`profiles/bench/main.py`](firmware/pico/profiles/bench/main.py) is the RS-485 firmware validated on the P4 bench, and [`main.py`](firmware/pico/main.py) is its adaptation to the Pico 2 socket pin map (register map `0x0102`, DHT11 not installed), not yet validated on hardware. The Pi-side P4 [RS-485 Modbus client](experiments/rs485/rs485_modbus_client.py) includes bounded retries, reception resynchronization, request/response checks, a 5 ms inter-frame gap, and transport counters. Its RS-485 behavior was characterized in dedicated turnaround diagnostics under idle and CPU/I/O-loaded conditions. The remaining bus-level concerns are tracked in [`docs/next_steps.md`](docs/next_steps.md).
 
 **ATP (Agnostic Telemetry Protocol)** is a separate, longer-term protocol effort motivated by the limitations of synchronous Modbus polling. The intended design includes device identity, heartbeats, prioritized faults, asynchronous events, and request/response correlation. A conceptual frame is:
 
@@ -211,7 +211,7 @@ weather-station/
 │   ├── bme_688/
 │   └── rs485/
 ├── firmware/
-│   ├── pico/                   # Canonical Pico application and dependency lock
+│   ├── pico/                   # Pico application profiles (socket, bench, uart) and dependency lock
 │   └── zero/                   # Reserved for future expansion
 ├── hardware/
 │   └── cad/
@@ -227,8 +227,8 @@ weather-station/
 
 | Directory | Purpose |
 |---|---|
-| `firmware/pico/` | Canonical Pico 2 application, UART alternative, sensor drivers, and `dependencies.lock.json` |
-| `tools/` | Host-side provisioning and development utilities |
+| `firmware/pico/` | Pico 2 application profiles (socket, validated bench, historical UART), sensor drivers, and `dependencies.lock.json` |
+| `tools/` | Host-side provisioning (`picoctl.py`: deploy, push, status, backup) |
 | `tests/` | Automated tests, including installer regressions |
 | `experiments/` | Historical experiments, field-bus diagnostics, end-to-end runners, and retained validation evidence |
 | `backend/database/` | Test and prototype database models and SQL |
@@ -244,9 +244,11 @@ A replacement Pico 2 can be provisioned from the repository root with one comman
 python tools/picoctl.py
 ```
 
-The interactive installer lists serial ports, lets the operator select the device, backs up its filesystem, installs pinned `micropython-modbus` and the application modules, and verifies transferred files and imports. It also preserves a verified download of the known-good Pimoroni MicroPython UF2 **on the host PC**; it does not flash the UF2.
+The interactive installer lists serial ports, asks which wiring profile the Pico is connected to (`socket`, `bench` or `uart`, with no default), backs up its filesystem, installs pinned `micropython-modbus` and the application modules, and verifies transferred files and imports. It keeps a verified copy of the known-good Pimoroni MicroPython UF2 **on the host PC**; it never flashes it.
 
-This workflow was validated on a physical Pico 2 (COM12) with a verified 15-file backup and passed post-install integrity checks. Dependency versions and hashes are maintained in [`firmware/pico/dependencies.lock.json`](firmware/pico/dependencies.lock.json). The [provisioning guide](docs/pico_provisioning.md) contains diagnostic and advanced usage details.
+Every deployment is recorded on the Pico (`/ws_deploy.json`: profile, Git commit and the SHA-256 of every file) and in a log on the PC. `picoctl push` copies individual experiment scripts with the same backup, read-back and record, and `picoctl status` shows whether the Pico still matches its record and the repository.
+
+The original installer was validated on a physical Pico 2 (COM12) with a verified 15-file backup and passed post-install integrity checks. The profiles, deployment record, `push` and `status` are covered by host tests against a simulated Pico and still need a run on hardware. Dependency versions and hashes are maintained in [`firmware/pico/dependencies.lock.json`](firmware/pico/dependencies.lock.json). The [provisioning guide](docs/pico_provisioning.md) contains the full workflow.
 
 ---
 
@@ -269,8 +271,8 @@ For the active technical debt and its test evidence, see [`docs/next_steps.md`](
 | **P1 — Pi↔Pico UART + DHT11** | Complete | 23 h 25 min continuous run; validated ingestion, liveness, and reconnection |
 | **P2 — Modbus RTU contract** | Complete | Frozen v1.0 register map and 19/19 integration tests |
 | **P3 — BME688 environmental acquisition** | Complete | v1.1 (`0x0101`) register map; P3-06 24.13-hour run, 17,372 paired acquisitions, no losses; P3-07 mechanical requirements frozen |
-| **P4 — RS-485 communication** | Bench-validated; integration work remains | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
-| **Pico 2 provisioning** | Complete | One-command installer, pinned UF2/dependencies, hardware-proven backup and upload, 23 automated tests |
+| **P4 — RS-485 communication** | Bench-validated; socket firmware not yet validated | Half-duplex Pi 5↔Pico 2 testing, turnaround diagnostics, client with retries and counters, P4 long-run **runner implemented**; no long-duration P4 report published in this repository |
+| **Pico 2 provisioning** | Complete; traceability extension pending hardware run | One-command installer, pinned UF2/dependencies/`mpremote`, hardware-proven backup and upload; wiring profiles, on-device deployment record, `push` and `status` tested against a simulated Pico (39 automated tests) |
 | **Outdoor mechanical fabrication** | In progress | Outdoor-box print set (Pico 2 socket v4, board holders, PWR-DIST spacers) published as STL on 2026-11-09; level-2 deck, instrument hardware, editable CAD source and assembly qualification remain open |
 | **Outdoor wiring and protection** | Not field-qualified | Power distribution, bus bias/termination, weatherproofing and environmental exposure validation still needed |
 | **Production backend / dashboard** | Planned | Experimental storage is working; unattended production services and user interface are separate work |

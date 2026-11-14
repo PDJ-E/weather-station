@@ -10,6 +10,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - First published STL release for the outdoor electronics box, `hardware/cad/exports/outdoor-box/2026-11-09-box-print-set/`: the Pico 2 socket v4 (body, bottom cover, retention frame, hinge and latch post blocks, bus ladder tray v2), holders for buck A, buck B, the Grove temperature sensor and the RS-485 breakouts, and the PWR-DIST spacer. Includes a part list with quantities, fasteners, print settings and checksums. Editable Fusion source is not yet included.
 - `.gitattributes` marking STL, STEP, F3D and 3MF files as binary.
+- Pico 2 socket firmware (`firmware/pico/main.py`, profile `socket`): RS-485 RTS on GP2 and BME688 on I²C1 GP6/GP7, matching the socket pin map; DHT11 disabled (`DHT11_INSTALLED = False`). **Not yet validated on hardware.**
+- Register Map v1.2 (`0x0102`) delta, `docs/phase_4/p4_register_map_v1_2_delta.md`: DHT11 `sensor_status` code `3 = NOT_INSTALLED`, which does not set `FAULT`. Layout unchanged.
+- `experiments/rs485/p4_socket_environmental_test_pi.py`, the Pi-side RS-485 test for the socket firmware (expects map `0x0102` and a `NOT_INSTALLED` DHT11). `rs485_environmental_test_pi.py` is left unchanged.
+- `firmware/pico/profiles/bench/main.py`: the validated P4-08 bench firmware, unchanged, as profile `bench`.
+- `picoctl` deployment record: `/ws_deploy.json` on the Pico (profile, Git commit, uncommitted files, SHA-256 and source of every file, later pushes) and `.pico-deployments/log.jsonl` on the PC.
+- `picoctl push`: copies individual files (for example experiment scripts, optionally `--as main.py`) with a backup of overwritten files, SHA-256 read-back and a note in the record.
+- `picoctl status`: reads the Pico back (on-device SHA-256) and reports files changed by hand, missing or unmanaged, and repository files that differ from what was deployed.
+- Host tests for profiles, empty-Pico handling, pinned `mpremote`, and the deploy → status → push sequence against a simulated Pico filesystem (39 tests). CI also compiles every firmware file with `mpy-cross`.
 
 - P4-08 RS-485 bench tests for the SparkFun RS-485 breakouts: a Modbus link test and an environmental (DHT11 + BME688) test for the Pi 5, and the Pico firmware `bme688_modbus_rs485_pico.py` with RTS direction control on GP6.
 - RS-485 turnaround diagnostic (`rs485_turnaround_diag_pi.py` / `rs485_turnaround_diag_pico.py`) that sweeps the Pi direction-control method and the Pico turnaround, with optional hardware timing of the Pi's RTS release through a sense wire.
@@ -24,6 +32,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - README: new "Outdoor electronics box" and "CAD and manufacturing files" sections; repository structure and status updated for the first STL release.
+- `picoctl deploy` requires `--profile` (`socket`, `bench`, `uart`); the interactive installer asks for it with no default. The former `rs485` profile is now `bench`.
+- `picoctl` refuses `--port auto` and a missing port for any command that talks to the Pico.
+- The interactive installer marks Raspberry Pi USB devices and only offers a default port when exactly one is attached.
+- An empty Pico no longer blocks the interactive installer: it asks for confirmation before continuing without a backup (`--skip-backup` on the command line).
+- `mpremote` is pinned to `1.29.0` (in `requirements.txt` and checked by `picoctl`), because its output is parsed.
+- Caching the UF2 recovery copy is best-effort during `deploy`: a network failure only warns.
+- The post-install import check also imports `dht11_sensor` and `bme688_modbus_extension`.
+- The provisioning CI workflow runs on pushes to `main` instead of the merged feature branch.
+
 - The Pi RS-485 scripts release RTS after a computed frame time (busy-wait) instead of `uart.flush()`: measured RTS release went from 4–20 ms to ~150–200 µs (5 ms worst case under load).
 - The Pico waits `RS485_TURNAROUND_MS = 10` before enabling its RS-485 driver, about twice the worst Pi release measured under load.
 

@@ -1,5 +1,6 @@
 """Host-side provisioning regression tests; no connected Pico is required."""
 import io
+import json
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -15,6 +16,51 @@ SPEC.loader.exec_module(picoctl)
 
 
 class PicoctlTests(unittest.TestCase):
+    def test_dependency_lock_is_canonical(self):
+        lock = picoctl.load_dependency_lock()
+        self.assertEqual(lock["schema_version"], 1)
+        self.assertEqual(lock["firmware"]["sha256"], picoctl.FIRMWARE_SHA256)
+        self.assertEqual(lock["modbus"]["sha256"], picoctl.EXPECTED_SHA256)
+        self.assertEqual(lock["modbus"]["version"], picoctl.RELEASE)
+        self.assertEqual(lock["modbus"]["filename"], picoctl.MODBUS_ARCHIVE_NAME)
+        self.assertEqual(lock["firmware"]["action"], "download_only")
+
+    def test_dependency_lock_rejects_changed_sha256(self):
+        lock = json.loads(picoctl.LOCK_FILE.read_text(encoding="utf-8"))
+        lock["firmware"]["sha256"] = "abc"
+        with tempfile.TemporaryDirectory() as td:
+            candidate = Path(td) / "bad.lock.json"
+            candidate.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.load_dependency_lock(candidate)
+
+    def test_dependency_lock_rejects_untrusted_url(self):
+        lock = json.loads(picoctl.LOCK_FILE.read_text(encoding="utf-8"))
+        lock["firmware"]["url"] = "https://example.com/firmware.uf2"
+        with tempfile.TemporaryDirectory() as td:
+            candidate = Path(td) / "bad.lock.json"
+            candidate.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.load_dependency_lock(candidate)
+
+    def test_dependency_lock_rejects_inconsistent_version(self):
+        lock = json.loads(picoctl.LOCK_FILE.read_text(encoding="utf-8"))
+        lock["modbus"]["version"] = "2.3.8"
+        with tempfile.TemporaryDirectory() as td:
+            candidate = Path(td) / "bad.lock.json"
+            candidate.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.load_dependency_lock(candidate)
+
+    def test_dependency_lock_rejects_firmware_flash_policy(self):
+        lock = json.loads(picoctl.LOCK_FILE.read_text(encoding="utf-8"))
+        lock["firmware"]["action"] = "flash"
+        with tempfile.TemporaryDirectory() as td:
+            candidate = Path(td) / "bad.lock.json"
+            candidate.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaises(picoctl.ProvisionError):
+                picoctl.load_dependency_lock(candidate)
+
     def test_firmware_is_pinned_to_original_pimoroni_build(self):
         self.assertEqual(picoctl.FIRMWARE_NAME, "rpi_pico2-v1.29.0-micropython.uf2")
         self.assertIn("pimoroni-pico-rp2350", picoctl.FIRMWARE_URL)

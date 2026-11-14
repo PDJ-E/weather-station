@@ -23,6 +23,17 @@ COMMON = PICO  # Deployed modules live beside the canonical main.py
 RELEASE = "2.3.7"
 EXPECTED_SHA256 = "b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271"
 PYPI_JSON = f"https://pypi.org/pypi/micropython-modbus/{RELEASE}/json"
+
+# Pinned, known-good Pimoroni 1.29.0 build previously used by the project.
+# Downloaded only to the host PC; never flashed to the Pico.
+FIRMWARE_NAME = "rpi_pico2-v1.29.0-micropython.uf2"
+FIRMWARE_URL = (
+    "https://github.com/pimoroni/pimoroni-pico-rp2350/releases/"
+    "download/v1.29.0/" + FIRMWARE_NAME
+)
+FIRMWARE_SHA256 = "2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3"
+FIRMWARE_SIZE = 1_833_472
+FIRMWARE_DIR = REPO / ".pico-firmware"
 CORE = ("environmental_reading.py", "dht11_sensor.py", "bme688_sensor.py", "pico_modbus_patch.py")
 
 
@@ -99,6 +110,51 @@ def backup(port: str, destination: Path) -> Path:
     )
     print(f"Backed up {len(inventory)} file(s) to {destination}")
     return destination
+
+
+def download_firmware(offline: bool = False) -> Path:
+    """Cache the exact known-good UF2 on the PC. NEVER flash the board."""
+    target = FIRMWARE_DIR / FIRMWARE_NAME
+    if target.is_file():
+        if target.stat().st_size != FIRMWARE_SIZE or file_sha(target) != FIRMWARE_SHA256:
+            raise ProvisionError(
+                f"Existing UF2 failed integrity verification: {target}. "
+                "Move the corrupt file aside and retry."
+            )
+        print(f"Pimoroni UF2 verified (already cached, NOT flashed): {target}")
+        return target
+    if offline:
+        raise ProvisionError(f"Offline mode: UF2 is not cached at {target}")
+
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading pinned Pimoroni UF2 to host PC: {FIRMWARE_NAME}")
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".pico-uf2-", suffix=".download",
+            dir=FIRMWARE_DIR, delete=False,
+        ) as temp_file:
+            temp_name = Path(temp_file.name)
+            with urlopen(FIRMWARE_URL, timeout=45) as response:
+                total = 0
+                digest = hashlib.sha256()
+                while True:
+                    data = response.read(65536)
+                    if not data:
+                        break
+                    total += len(data)
+                    if total > FIRMWARE_SIZE:
+                        raise ProvisionError("UF2 download larger than expected")
+                    digest.update(data)
+                    temp_file.write(data)
+        if total != FIRMWARE_SIZE or digest.hexdigest() != FIRMWARE_SHA256:
+            raise ProvisionError("UF2 size/SHA256 mismatch; download rejected")
+        os.replace(temp_name, target)
+    finally:
+        if temp_name and temp_name.exists():
+            temp_name.unlink()
+    print(f"Pimoroni UF2 saved (NOT flashed): {target}")
+    return target
 
 
 def cache_file() -> Path:
@@ -218,10 +274,12 @@ def deploy(args: argparse.Namespace) -> None:
         shown = source.relative_to(REPO) if source.is_relative_to(REPO) else source
         print(f"  {shown} -> /{target}")
     print("  micropython-modbus (SHA256-pinned) -> /lib/umodbus/")
+    print(f"  Pimoroni UF2 -> host cache .pico-firmware/{FIRMWARE_NAME} (never flashed)")
     if not args.apply:
         print("DRY RUN: add --apply --port COMx to deploy.")
         return
 
+    download_firmware(args.offline)
     ensure_mpremote()
     doctor(args.port)
     if args.skip_backup:
@@ -269,9 +327,12 @@ def deploy(args: argparse.Namespace) -> None:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Pico 2 provisioning for Weather Station")
     sub = p.add_subparsers(dest="command", required=True)
-    for command in ("doctor", "backup", "deploy"):
+    for command in ("doctor", "backup", "deploy", "firmware"):
         s = sub.add_parser(command)
-        s.add_argument("--port", default="auto", help="USB COM port, e.g. COM5 or /dev/ttyACM0")
+        if command != "firmware":
+            s.add_argument("--port", default="auto", help="USB COM port, e.g. COM5 or /dev/ttyACM0")
+        else:
+            s.add_argument("--offline", action="store_true", help="Verify local UF2 cache without network")
         if command == "backup":
             s.add_argument("--destination", type=Path)
         if command == "deploy":
@@ -293,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             ensure_mpremote()
             doctor(args.port)
+        elif args.command == "firmware":
+            download_firmware(args.offline)
         elif args.command == "backup":
             ensure_mpremote()
             path = args.destination or default_backup_path()

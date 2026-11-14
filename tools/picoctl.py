@@ -21,25 +21,95 @@ from urllib.request import urlopen
 REPO = Path(__file__).resolve().parents[1]
 PICO = REPO / "firmware" / "pico"
 COMMON = PICO  # Deployed modules live beside the canonical main.py
-RELEASE = "2.3.7"
-EXPECTED_SHA256 = "b9351a66af0ff29dd585900e53827a989dedcb02ec63b1041358165089652271"
-PYPI_JSON = f"https://pypi.org/pypi/micropython-modbus/{RELEASE}/json"
-
-# Pinned, known-good Pimoroni 1.29.0 build previously used by the project.
-# Downloaded only to the host PC; never flashed to the Pico.
-FIRMWARE_NAME = "rpi_pico2-v1.29.0-micropython.uf2"
-FIRMWARE_URL = (
-    "https://github.com/pimoroni/pimoroni-pico-rp2350/releases/"
-    "download/v1.29.0/" + FIRMWARE_NAME
-)
-FIRMWARE_SHA256 = "2246a7daaf436d39f8c6810342def221c87aa4d50386942b32b9fadd10471dd3"
-FIRMWARE_SIZE = 1_833_472
+LOCK_FILE = PICO / "dependencies.lock.json"
 FIRMWARE_DIR = REPO / ".pico-firmware"
 CORE = ("environmental_reading.py", "dht11_sensor.py", "bme688_sensor.py", "pico_modbus_patch.py")
 
 
 class ProvisionError(RuntimeError):
     """A recoverable provisioning error."""
+
+
+def load_dependency_lock(path: Path = LOCK_FILE) -> dict:
+    """Read a committed, strictly validated dependency lock, never remote metadata.
+
+    SHA-256 values are deliberate pins, not dynamically inferred from a
+    download. Updating firmware or Modbus requires reviewing a Git diff.
+    """
+    try:
+        lock = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProvisionError(f"Cannot load dependency lock: {path}: {exc}") from exc
+
+    if not isinstance(lock, dict) or set(lock) != {
+        "schema_version", "firmware", "modbus"
+    } or type(lock["schema_version"]) is not int or lock["schema_version"] != 1:
+        raise ProvisionError("Unsupported dependency lock schema; expected version 1")
+
+    firmware, modbus = lock["firmware"], lock["modbus"]
+    if not isinstance(firmware, dict) or set(firmware) != {
+        "board", "distribution", "version", "filename", "url",
+        "sha256", "size", "action"
+    }:
+        raise ProvisionError("Malformed firmware lock entry")
+    if not isinstance(modbus, dict) or set(modbus) != {
+        "package", "version", "filename", "metadata_url", "sha256",
+        "device_path"
+    }:
+        raise ProvisionError("Malformed Modbus lock entry")
+
+    import urllib.parse
+
+    for entry in (firmware, modbus):
+        digest = entry["sha256"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ProvisionError("Invalid SHA-256 in dependency lock")
+        version, filename = entry["version"], entry["filename"]
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", version):
+            raise ProvisionError("Invalid version in dependency lock")
+        if not isinstance(filename, str) or filename in ("", ".", "..") or "/" in filename or "\\" in filename:
+            raise ProvisionError("Invalid filename in dependency lock")
+
+    if (
+        firmware["board"] != "Raspberry Pi Pico 2 (RP2350)"
+        or firmware["distribution"] != "Pimoroni MicroPython"
+        or firmware["action"] != "download_only"
+        or type(firmware["size"]) is not int
+        or not 0 < firmware["size"] <= 8_000_000
+    ):
+        raise ProvisionError("Unexpected firmware board, size or installation policy")
+    if firmware["filename"] != f"rpi_pico2-v{firmware['version']}-micropython.uf2":
+        raise ProvisionError("Firmware filename/version mismatch")
+    parsed = urllib.parse.urlsplit(firmware["url"])
+    expected_path = (
+        "/pimoroni/pimoroni-pico-rp2350/releases/download/"
+        f"v{firmware['version']}/{firmware['filename']}"
+    )
+    if (parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment) != (
+        "https", "github.com", expected_path, "", ""
+    ):
+        raise ProvisionError("Untrusted firmware download URL")
+
+    if modbus["package"] != "micropython-modbus" or modbus["device_path"] != "/lib/umodbus":
+        raise ProvisionError("Unsupported Modbus dependency or device path")
+    if modbus["filename"] != f"micropython-modbus-{modbus['version']}.tar.gz":
+        raise ProvisionError("Modbus filename/version mismatch")
+    if modbus["metadata_url"] != f"https://pypi.org/pypi/micropython-modbus/{modbus['version']}/json":
+        raise ProvisionError("Untrusted Modbus metadata URL")
+
+    return lock
+
+
+# Version and checksums are read exclusively from the reviewed lock manifest.
+DEPENDENCIES = load_dependency_lock()
+RELEASE = DEPENDENCIES["modbus"]["version"]
+EXPECTED_SHA256 = DEPENDENCIES["modbus"]["sha256"]
+MODBUS_ARCHIVE_NAME = DEPENDENCIES["modbus"]["filename"]
+PYPI_JSON = DEPENDENCIES["modbus"]["metadata_url"]
+FIRMWARE_NAME = DEPENDENCIES["firmware"]["filename"]
+FIRMWARE_URL = DEPENDENCIES["firmware"]["url"]
+FIRMWARE_SHA256 = DEPENDENCIES["firmware"]["sha256"]
+FIRMWARE_SIZE = DEPENDENCIES["firmware"]["size"]
 
 
 def file_sha(path: Path) -> str:
@@ -214,7 +284,7 @@ def cache_file() -> Path:
         base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
     else:
         base = Path.home() / ".cache"
-    return base / "weather-station" / f"micropython-modbus-{RELEASE}.tar.gz"
+    return base / "weather-station" / MODBUS_ARCHIVE_NAME
 
 
 def acquire_modbus(offline: bool, supplied_archive: Path | None) -> Path:
@@ -231,7 +301,7 @@ def acquire_modbus(offline: bool, supplied_archive: Path | None) -> Path:
                 metadata = json.load(response)
             matches = [
                 item for item in metadata["urls"]
-                if item["filename"] == f"micropython-modbus-{RELEASE}.tar.gz"
+                if item["filename"] == MODBUS_ARCHIVE_NAME
             ]
             if len(matches) != 1 or matches[0]["digests"]["sha256"] != EXPECTED_SHA256:
                 raise ProvisionError("Unexpected PyPI metadata; refusing download")

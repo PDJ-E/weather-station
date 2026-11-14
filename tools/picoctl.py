@@ -65,7 +65,7 @@ def load_dependency_lock(path: Path = LOCK_FILE) -> dict:
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ProvisionError("Invalid SHA-256 in dependency lock")
         version, filename = entry["version"], entry["filename"]
-        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", version):
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise ProvisionError("Invalid version in dependency lock")
         if not isinstance(filename, str) or filename in ("", ".", "..") or "/" in filename or "\\" in filename:
             raise ProvisionError("Invalid filename in dependency lock")
